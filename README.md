@@ -10,6 +10,7 @@ runs unchanged behind a CLI today and an Express + React app later.
 - [Content model](docs/CONTENT-MODEL.md) — ideas vs platform versions, formats, time, campaigns
 - [Architecture](docs/ARCHITECTURE.md) — surface selection, cost strategy, deployment target
 - [Media](docs/MEDIA.md) — letting the agent see the user's photos
+- [Web UI](docs/WEB.md) — the API layer, SSE, and where the human gate lives
 - [Connecting accounts](docs/OAUTH.md) — Meta OAuth, what it really requires
 - [Roadmap](docs/ROADMAP.md) — the phases and what each one teaches
 
@@ -32,6 +33,29 @@ npm run agent      # interactive REPL
 npm run verify     # 83 safety assertions
 npm run typecheck
 ```
+
+### Web UI
+
+One-time setup:
+
+```bash
+npm run web:install
+```
+
+Then two terminals — one each, no shell chaining, so this works the same in
+PowerShell, cmd and bash:
+
+```bash
+npm run api     # terminal 1 — Express + SSE on :3001
+npm run web     # terminal 2 — React on :5173
+```
+
+Open the URL Vite prints. It is usually http://localhost:5173, but Vite moves to
+the next free port if something else is already using it — read the line that
+says `Local:`.
+
+Calendar and media library on the left, the agent on the right. Vite proxies
+`/api` to the Express server, so the browser sees one origin.
 
 Then talk to it: `plan next week for me`
 
@@ -59,6 +83,9 @@ src/
     tools.ts        the 19 tools
     system.ts       agent instructions — frozen, so it caches
     time-context.ts what "now" and "next Monday" mean, injected per turn
+  server/
+    index.ts        Express API — SSE for agent turns, REST for everything else
+    sessions.ts     per-conversation agents over one shared store
   store/
     memory.ts       backend validation layer (mock DynamoDB)
     connections.ts  OAuth connections and their channels — tokens never leave

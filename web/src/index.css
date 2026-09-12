@@ -1,0 +1,162 @@
+@import "tailwindcss";
+
+/* A warm light theme.
+   Stone rather than neutral for every grey: it carries a little red, which
+   keeps whites looking like paper instead of screen-white, and sits naturally
+   beside the amber accent and the coffee photography this tool is full of. */
+@theme {
+  --color-canvas: #faf7f2;
+  --color-canvas-deep: #f3ede4;
+  --color-ink: #1c1917;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  /* A very slight warm wash from the top stops a full-height page reading as
+     flat white. */
+  background:
+    radial-gradient(1200px 400px at 50% -200px, #fff8ec 0%, transparent 70%),
+    var(--color-canvas);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d6cec3;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #bdb2a3;
+  background-clip: content-box;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-fade-up {
+  animation: fade-up 0.18s ease-out;
+}
+
+/* One soft, warm elevation used by every card, so depth stays consistent. */
+.card {
+  box-shadow:
+    0 1px 2px rgba(28, 25, 23, 0.04),
+    0 1px 3px rgba(28, 25, 23, 0.03);
+}
+.card-hover:hover {
+  box-shadow:
+    0 2px 4px rgba(28, 25, 23, 0.05),
+    0 4px 12px rgba(28, 25, 23, 0.05);
+}
+
+/* ---------------------------------------------------------------------------
+   Animated backdrop for the content area.
+
+   The day rails and the gaps between day groups were large empty bands. A
+   slow-drifting lavender field gives them something to be without competing
+   with the cards: everything here is low-alpha and heavily blurred, so it reads
+   as tinted paper rather than as decoration.
+
+   All movement is transform-only, so it composites on the GPU and costs
+   nothing to animate.
+--------------------------------------------------------------------------- */
+
+.backdrop-field {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: linear-gradient(180deg, #fbfaff 0%, #f7f5fd 100%);
+}
+
+/* A faint dot grid, faded out top and bottom so it never ends abruptly. */
+.backdrop-grid {
+  position: absolute;
+  inset: -40px;
+  background-image: radial-gradient(circle, rgba(139, 92, 246, 0.13) 1px, transparent 1px);
+  background-size: 24px 24px;
+  mask-image: radial-gradient(120% 80% at 50% 30%, #000 30%, transparent 80%);
+  animation: grid-pan 24s linear infinite;
+}
+
+.backdrop-blob {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(70px);
+  will-change: transform;
+}
+
+.backdrop-blob-a {
+  width: 480px;
+  height: 480px;
+  top: -160px;
+  left: -80px;
+  background: radial-gradient(circle, rgba(167, 139, 250, 0.38), transparent 70%);
+  animation: drift-a 26s ease-in-out infinite;
+}
+
+.backdrop-blob-b {
+  width: 560px;
+  height: 560px;
+  top: 20%;
+  right: -180px;
+  background: radial-gradient(circle, rgba(196, 181, 253, 0.42), transparent 70%);
+  animation: drift-b 32s ease-in-out infinite;
+}
+
+.backdrop-blob-c {
+  width: 440px;
+  height: 440px;
+  bottom: -200px;
+  left: 30%;
+  background: radial-gradient(circle, rgba(221, 214, 254, 0.5), transparent 70%);
+  animation: drift-c 38s ease-in-out infinite;
+}
+
+@keyframes grid-pan {
+  to {
+    background-position: 24px 24px;
+  }
+}
+@keyframes drift-a {
+  50% {
+    transform: translate(70px, 50px) scale(1.15);
+  }
+}
+@keyframes drift-b {
+  50% {
+    transform: translate(-90px, 70px) scale(0.9);
+  }
+}
+@keyframes drift-c {
+  50% {
+    transform: translate(60px, -70px) scale(1.12);
+  }
+}
+
+/* Motion is ambient, not informative — so it is the first thing to go. */
+@media (prefers-reduced-motion: reduce) {
+  .backdrop-grid,
+  .backdrop-blob {
+    animation: none;
+  }
+}

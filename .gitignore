@@ -10,3 +10,6 @@ out/
 
 # uploaded photos and videos — user data, never commit
 media/
+
+# vite build output
+web/dist/
