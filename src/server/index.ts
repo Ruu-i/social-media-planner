@@ -5,6 +5,7 @@ import cors from "cors";
 import { createSession, getAgent, media, publisher, store, storage, USER_ID } from "./sessions.js";
 import { describeImage, canDescribe } from "../media/describe.js";
 import { suitableFormats } from "../media/types.js";
+import { readVideoInfo, videoMimeFor } from "../media/video.js";
 import { StoreError } from "../store/memory.js";
 import { MediaError } from "../store/media.js";
 
@@ -72,6 +73,55 @@ app.get("/api/sessions/:id/stream", async (req, res) => {
   const message = String(req.query.q ?? "").trim();
   if (!message) return res.status(400).json({ error: "INVALID_INPUT", message: "q is required" });
 
+  /**
+   * Files attached to THIS message.
+   *
+   * They are already uploaded and described by the time we get here, so what
+   * the agent needs is not the bytes but the knowledge that "this" in "schedule
+   * this reel" refers to a specific asset. Prepending a delimited block is the
+   * same trick the time context uses, and it keeps the reference unambiguous
+   * without inventing a tool.
+   */
+  const attachedIds = String(req.query.assets ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+
+  let prompt = message;
+  if (attachedIds.length > 0) {
+    const lines: string[] = [];
+    for (const id of attachedIds) {
+      const a = media.summarise(USER_ID, id);
+      if (!a) continue;
+      lines.push(
+        `- ${a.assetId} (${a.kind}, ${a.aspectRatio}` +
+          `${a.durationSeconds ? `, ${a.durationSeconds}s` : ""}) ` +
+          `usable as: ${a.suitableFormats.join(", ") || "NOTHING — wrong shape for any format"}
+` +
+          `  ${a.description}` +
+          (a.describedFrom === "NOT_DESCRIBED"
+            ? `
+  NOT DESCRIBED: this is a video and you cannot watch it. You know only its ` +
+              `shape and length. Ask the user what is in it rather than inventing detail, ` +
+              `and say so plainly if you write copy around it.`
+            : ""),
+      );
+    }
+    if (lines.length > 0) {
+      prompt =
+        `<attached_media>
+The user attached these files to this message. When they say ` +
+        `"this", they mean these. Whenever you create or revise content that uses one of ` +
+        `these files, you MUST put its id in that variant's assetIds — otherwise the ` +
+        `content is not actually linked to the file and will publish with nothing attached.
+
+${lines.join("\n")}
+</attached_media>
+
+${message}`;
+    }
+  }
+
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache, no-transform",
@@ -90,7 +140,7 @@ app.get("/api/sessions/:id/stream", async (req, res) => {
   const heartbeat = setInterval(() => res.write(": keepalive\n\n"), 15_000);
 
   try {
-    const result = await agent.send(message, {
+    const result = await agent.send(prompt, {
       onToolCall: (name) => send("tool", { name }),
       onThinking: (delta) => send("thinking", { delta }),
       onWriting: () => send("writing", {}),
@@ -187,23 +237,65 @@ app.post("/api/media", async (req, res) => {
       .json({ error: "INVALID_INPUT", message: "filename and dataBase64 are required" });
   }
 
-  const mimeType = mimeFor(filename);
-  if (!canDescribe(mimeType)) {
+  const videoMime = videoMimeFor(filename);
+  const mimeType = videoMime ?? mimeFor(filename);
+  if (!videoMime && !canDescribe(mimeType)) {
     return res.status(400).json({
       error: "INVALID_INPUT",
-      message: `${mimeType} cannot be described. Use jpg, png, gif or webp.`,
+      message: `${mimeType} is not supported. Use jpg, png, gif, webp, mp4 or mov.`,
     });
   }
 
   try {
     const data = Buffer.from(dataBase64, "base64");
+    const stored = await storage.put(USER_ID, filename, data);
+
+    // --- video -------------------------------------------------------------
+    // There is no video input to the model, so a clip is stored and measured
+    // but NOT described. Saying so explicitly is the point: the agent must not
+    // plan around footage nobody has looked at.
+    if (videoMime) {
+      const info = readVideoInfo(data);
+      if (!info) {
+        return res.status(400).json({
+          error: "INVALID_INPUT",
+          message:
+            "Could not read the dimensions of that video. MP4 and MOV are supported; " +
+            "WebM is not, because its header is a different container format.",
+        });
+      }
+
+      const asset = media.add({
+        userId: USER_ID,
+        kind: "VIDEO",
+        mimeType: videoMime,
+        bytes: data.byteLength,
+        width: info.width,
+        height: info.height,
+        durationSeconds: info.durationSeconds,
+        storageRef: stored.storageRef,
+        publicUrl: stored.publicUrl,
+        description:
+          `Video uploaded as "${filename}". Not yet described — Claude cannot watch video, ` +
+          `so nothing is known about its content beyond its shape and length.`,
+        tags: ["video", "undescribed"],
+        describedFrom: "NOT_DESCRIBED",
+      });
+
+      return res.json({
+        asset: media.summarise(USER_ID, asset.id),
+        quality: "unknown",
+        suitableFormats: suitableFormats(asset),
+      });
+    }
+
+    // --- image -------------------------------------------------------------
     const profile = store.getBusinessProfile(USER_ID);
     const described = await describeImage(data, mimeType, {
       businessName: profile.businessName,
       industry: profile.industry,
     });
     const dims = imageSize(data) ?? { width: 1080, height: 1080 };
-    const stored = await storage.put(USER_ID, filename, data);
 
     const asset = media.add({
       userId: USER_ID,

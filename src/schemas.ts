@@ -246,10 +246,13 @@ export const VariantDraftSchema = z.object({
     .array(z.string())
     .default([])
     .describe(
-      "Real uploaded assets to use, from list_media_assets. Leave empty when " +
-        "planning ahead of a shoot — then the media fields above act as a brief " +
-        "for what to capture. When assets ARE chosen, write the caption about " +
-        "what is actually in them rather than describing something imagined.",
+      "Real uploaded assets to use, from list_media_assets or attached by the " +
+        "user to their message. REQUIRED whenever the content is built on a file " +
+        "that exists: a variant with an empty assetIds publishes with no media " +
+        "attached, which is almost never what was wanted. Leave it empty ONLY " +
+        "when planning ahead of a shoot — then the media fields act as a brief " +
+        "for what to capture. When assets are chosen, write the caption about " +
+        "what is actually in them rather than something imagined.",
     ),
   hook: z.string().describe("The opening line. Must earn the next line on its own."),
   caption: z

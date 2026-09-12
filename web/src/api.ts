@@ -151,8 +151,14 @@ export function streamTurn(
   sessionId: string,
   message: string,
   handlers: StreamHandlers,
+  attachedAssetIds: string[] = [],
 ): () => void {
-  const url = `/api/sessions/${sessionId}/stream?q=${encodeURIComponent(message)}`;
+  // Attached files are already uploaded by this point; the ids tell the agent
+  // what "this" refers to in "schedule this reel".
+  const assets = attachedAssetIds.length
+    ? `&assets=${encodeURIComponent(attachedAssetIds.join(","))}`
+    : "";
+  const url = `/api/sessions/${sessionId}/stream?q=${encodeURIComponent(message)}${assets}`;
   const source = new EventSource(url);
 
   source.addEventListener("tool", (e) =>
