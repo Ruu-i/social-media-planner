@@ -1,0 +1,12 @@
+node_modules/
+.env
+dist/
+out/
+*.log
+
+# never commit key backups
+.env.*
+!.env.example
+
+# uploaded photos and videos — user data, never commit
+media/
