@@ -13,6 +13,8 @@ import {
   type ConversationStore,
 } from "./store/conversations.js";
 import { createDynamoClient } from "./store/dynamo-table.js";
+import { clientIdOf, isStreamRoute, route } from "./lambda/router.js";
+import type { FunctionUrlEvent } from "./lambda/runtime.js";
 import {
   costOf,
   DynamoBudgetStore,
@@ -937,6 +939,98 @@ try {
     await guard.record(usage);
     check("enforcement is off unless DEMO_MODE is set", (await guard.check("anyone")).allowed);
   }
+}
+
+// -- lambda router -----------------------------------------------------------
+//
+// The router is split from the streaming handler precisely so it can be
+// exercised without a Lambda runtime and without a ResponseStream. These run
+// the real route table against the real store.
+
+{
+  const event = (
+    method: string,
+    path: string,
+    extra: Partial<FunctionUrlEvent> = {},
+  ): FunctionUrlEvent => ({
+    version: "2.0",
+    rawPath: path,
+    rawQueryString: "",
+    headers: {},
+    requestContext: { http: { method, path, sourceIp: "203.0.113.7" } },
+    ...extra,
+  });
+
+  const session = await route(event("POST", "/api/sessions"));
+  check(
+    "POST /api/sessions issues a session id",
+    session.kind === "json" &&
+      session.statusCode === 200 &&
+      typeof (session.body as { sessionId?: string }).sessionId === "string",
+  );
+
+  const calendar = await route(event("GET", "/api/calendar"));
+  check(
+    "GET /api/calendar returns items",
+    calendar.kind === "json" && Array.isArray((calendar.body as { items?: unknown[] }).items),
+  );
+
+  const accounts = await route(event("GET", "/api/accounts"));
+  check(
+    "GET /api/accounts returns both Meta channels",
+    accounts.kind === "json" &&
+      (accounts.body as { accounts: unknown[] }).accounts.length === 2,
+  );
+
+  const budget = await route(event("GET", "/api/budget"));
+  check(
+    "GET /api/budget reports the ceiling",
+    budget.kind === "json" && typeof (budget.body as { budgetUsd?: number }).budgetUsd === "number",
+  );
+
+  const missing = await route(event("GET", "/api/nope"));
+  check("an unknown route is a 404", missing.statusCode === 404);
+
+  // Store errors must become sensible status codes rather than 500s.
+  const ghost = await route(event("POST", "/api/variants/var_does_not_exist/approve"));
+  check("approving a nonexistent variant is a 404", ghost.statusCode === 404, `got ${ghost.statusCode}`);
+
+  const badUpload = await route(event("POST", "/api/media", { body: JSON.stringify({}) }));
+  check("uploading without a file is a 400", badUpload.statusCode === 400);
+
+  const wrongType = await route(
+    event("POST", "/api/media", {
+      body: JSON.stringify({ filename: "clip.mp4", dataBase64: "AAAA" }),
+    }),
+  );
+  check("uploading an undescribable type is a 400", wrongType.statusCode === 400);
+
+  // The SSE route must be recognised so it never falls through to the JSON
+  // path — a streamed turn written as a buffered response would break.
+  check(
+    "the stream route is matched",
+    isStreamRoute(event("GET", "/api/sessions/abc-123/stream")) === "abc-123",
+  );
+  check("a non-stream path is not matched", isStreamRoute(event("GET", "/api/calendar")) === null);
+  check(
+    "POST to the stream path is not matched",
+    isStreamRoute(event("POST", "/api/sessions/abc/stream")) === null,
+  );
+
+  // Behind CloudFront the source IP is the CDN, so the forwarded header is the
+  // only real identifier — and only its FIRST entry is trustworthy.
+  check(
+    "clientId prefers the first x-forwarded-for entry",
+    clientIdOf(
+      event("GET", "/api/calendar", {
+        headers: { "x-forwarded-for": "198.51.100.5, 10.0.0.1, 10.0.0.2" },
+      }),
+    ) === "198.51.100.5",
+  );
+  check(
+    "clientId falls back to the source IP",
+    clientIdOf(event("GET", "/api/calendar")) === "203.0.113.7",
+  );
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed  (store: ${STORE_KIND})\n`);
