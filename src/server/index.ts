@@ -2,7 +2,16 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 
-import { agentFor, createSession, media, publisher, store, storage, USER_ID } from "./sessions.js";
+import {
+  agentFor,
+  createSession,
+  media,
+  publisher,
+  spendGuard,
+  store,
+  storage,
+  USER_ID,
+} from "./sessions.js";
 import { describeImage, canDescribe } from "../media/describe.js";
 import { suitableFormats } from "../media/types.js";
 import { readVideoInfo, videoMimeFor } from "../media/video.js";
@@ -73,6 +82,19 @@ app.get("/api/sessions/:id/stream", async (req, res) => {
 
   const message = String(req.query.q ?? "").trim();
   if (!message) return res.status(400).json({ error: "INVALID_INPUT", message: "q is required" });
+
+  // The ONLY route that costs money. Everything else — calendar, media,
+  // approve, publish — is free, so a spent budget still leaves a fully
+  // explorable app rather than a dead page.
+  const decision = await spendGuard.check(clientIdOf(req));
+  if (!decision.allowed) {
+    return res.status(429).json({
+      error: "BUDGET_EXHAUSTED",
+      message: decision.reason,
+      spentUsd: decision.spentUsd,
+      budgetUsd: decision.budgetUsd,
+    });
+  }
 
   /**
    * Files attached to THIS message.
@@ -147,6 +169,9 @@ ${message}`;
       onWriting: () => send("writing", {}),
       onText: (delta) => send("text", { delta }),
     });
+    // Record after the fact: the true cost is only known once the turn ends.
+    await spendGuard.record(result.usage);
+
     send("done", {
       text: result.text,
       toolCalls: result.toolCalls.length,
@@ -337,6 +362,14 @@ app.get("/api/media/:id/file", async (req, res) => {
   }
 });
 
+app.get("/api/budget", async (_req, res) => {
+  try {
+    res.json(await spendGuard.status());
+  } catch (e) {
+    fail(res, e);
+  }
+});
+
 // -- accounts ----------------------------------------------------------------
 
 app.get("/api/accounts", async (_req, res) => {
@@ -348,6 +381,19 @@ app.get("/api/accounts", async (_req, res) => {
 });
 
 // -- helpers -----------------------------------------------------------------
+
+/**
+ * Who to rate-limit.
+ *
+ * Behind CloudFront the socket address is the CDN, so the forwarded header is
+ * the only thing that identifies a visitor. Taking the FIRST entry matters:
+ * later entries are appended by proxies and can be spoofed by the client.
+ */
+function clientIdOf(req: express.Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  const first = Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(",")[0];
+  return (first ?? req.socket.remoteAddress ?? "unknown").trim();
+}
 
 function mimeFor(filePath: string): string {
   const ext = filePath.toLowerCase().split(".").pop() ?? "";

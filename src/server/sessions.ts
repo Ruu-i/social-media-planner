@@ -13,6 +13,12 @@ import {
 import { createDynamoClient } from "../store/dynamo-table.js";
 import type { ContentStore } from "../store/types.js";
 import type { MediaStore } from "../store/media.js";
+import {
+  DynamoBudgetStore,
+  MemoryBudgetStore,
+  SpendGuard,
+  type BudgetStore,
+} from "../budget.js";
 
 /**
  * Process-wide wiring for the server.
@@ -64,5 +70,16 @@ export function agentFor(sessionId: string): ContentAgent {
     conversations,
   );
 }
+
+/**
+ * Spend control. Recording is always on; enforcement waits for DEMO_MODE, so
+ * local development is never throttled but the counters are still exercised.
+ */
+const budgets: BudgetStore =
+  process.env.STORE === "dynamo"
+    ? new DynamoBudgetStore(createDynamoClient())
+    : new MemoryBudgetStore();
+
+export const spendGuard = new SpendGuard(budgets);
 
 export { store, media, storage, publisher, conversations, USER_ID };

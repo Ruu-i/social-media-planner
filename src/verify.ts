@@ -13,6 +13,13 @@ import {
   type ConversationStore,
 } from "./store/conversations.js";
 import { createDynamoClient } from "./store/dynamo-table.js";
+import {
+  costOf,
+  DynamoBudgetStore,
+  MemoryBudgetStore,
+  SpendGuard,
+  type BudgetStore,
+} from "./budget.js";
 import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta";
 import { MockMetaConnector, MockTokenProvider } from "./connectors/mock.js";
 import { Publisher } from "./publisher.js";
@@ -776,27 +783,33 @@ try {
   }
 
   for (const [label, conv] of stores) {
-    check(`${label}: an unknown session loads as empty`, (await conv.load("s1")).length === 0);
+    // Unique ids per run. The Dynamo conversation store writes to the shared
+    // table, so fixed ids would inherit rows from a previous run and a test
+    // would fail for reasons that have nothing to do with the code.
+    const sid = (n: string) => `${n}-${label}-${Math.random().toString(36).slice(2, 10)}`;
+    const [s1, s2, s3] = [sid("s1"), sid("s2"), sid("s3")];
+
+    check(`${label}: an unknown session loads as empty`, (await conv.load(s1)).length === 0);
 
     const turn: BetaMessageParam[] = [
       { role: "user", content: "plan next week" },
       { role: "assistant", content: "done" },
     ];
-    await conv.save("s1", turn);
+    await conv.save(s1, turn);
 
-    const reloaded = await conv.load("s1");
+    const reloaded = await conv.load(s1);
     check(
       `${label}: a turn survives the round trip`,
       reloaded.length === 2 && (reloaded[0] as { content: string }).content === "plan next week",
     );
 
-    await conv.save("s1", [...turn, { role: "user", content: "make it funnier" }]);
+    await conv.save(s1, [...turn, { role: "user", content: "make it funnier" }]);
     check(
       `${label}: saving again appends rather than duplicating`,
-      (await conv.load("s1")).length === 3,
+      (await conv.load(s1)).length === 3,
     );
 
-    check(`${label}: sessions are isolated`, (await conv.load("s2")).length === 0);
+    check(`${label}: sessions are isolated`, (await conv.load(s2)).length === 0);
 
     // Zero-padded keys are what make DynamoDB's lexical order chronological.
     // Without them "MSG#10" sorts before "MSG#2" and the history scrambles.
@@ -804,8 +817,8 @@ try {
       role: "user",
       content: `m${i}`,
     }));
-    await conv.save("s3", many);
-    const back = await conv.load("s3");
+    await conv.save(s3, many);
+    const back = await conv.load(s3);
     check(
       `${label}: order holds past the tenth message`,
       back.length === 12 && (back[10] as { content: string }).content === "m10",
@@ -817,7 +830,8 @@ try {
   // 400KB item limit. It must never reach the table.
   if (STORE_KIND === "dynamo") {
     const conv = new DynamoConversationStore(createDynamoClient());
-    await conv.save("s-img", [
+    const imgSession = `img-${Math.random().toString(36).slice(2, 10)}`;
+    await conv.save(imgSession, [
       {
         role: "user",
         content: [
@@ -829,13 +843,99 @@ try {
         ],
       },
     ]);
-    const first = (await conv.load("s-img"))[0] as {
+    const first = (await conv.load(imgSession))[0] as {
       content: Array<{ type: string; text?: string }>;
     };
     check(
       "a base64 image is stripped before persisting",
       first.content[1]!.type === "text" && first.content[1]!.text!.includes("image omitted"),
     );
+  }
+}
+
+// -- spend control -----------------------------------------------------------
+//
+// An agent turn costs ~$0.30 and a public URL is reachable by anyone. These
+// assertions are about the two independent limits: a daily ceiling on total
+// spend, and a per-client rate so one visitor cannot drain the day.
+
+{
+  const stores: Array<[string, BudgetStore]> = [["memory", new MemoryBudgetStore()]];
+  if (STORE_KIND === "dynamo") {
+    stores.push(["dynamo", new DynamoBudgetStore(createDynamoClient())]);
+  }
+
+  const usage = { input: 20_000, output: 6_000, cacheRead: 60_000, cacheWrite: 0 };
+  const perTurn = costOf(usage);
+  check("a planning turn costs between 10c and 50c", perTurn > 0.1 && perTurn < 0.5, `$${perTurn.toFixed(4)}`);
+
+  for (const [label, budgets] of stores) {
+    const day = `test-${label}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const empty = await budgets.getDaySpend(day);
+    check(`${label}: an unused day reads as zero`, empty.costUsd === 0 && empty.turns === 0);
+
+    await budgets.addUsage(day, usage);
+    await budgets.addUsage(day, usage);
+    const after = await budgets.getDaySpend(day);
+    check(`${label}: usage accumulates`, after.turns === 2, `turns=${after.turns}`);
+    check(
+      `${label}: cost accumulates`,
+      Math.abs(after.costUsd - perTurn * 2) < 0.0001,
+      `$${after.costUsd.toFixed(4)}`,
+    );
+
+    // The case a spend cap must not get wrong. Read-modify-write would lose
+    // increments here; atomic ADD does not.
+    const raceDay = `race-${label}-${Math.random().toString(36).slice(2, 8)}`;
+    await Promise.all(Array.from({ length: 10 }, () => budgets.addUsage(raceDay, usage)));
+    check(
+      `${label}: concurrent writes do not lose increments`,
+      (await budgets.getDaySpend(raceDay)).turns === 10,
+      `turns=${(await budgets.getDaySpend(raceDay)).turns}`,
+    );
+
+    const client = `c-${Math.random().toString(36).slice(2, 8)}`;
+    const hour = "2026-09-22T10";
+    check(`${label}: first request for a client counts 1`, (await budgets.bumpClient(client, hour)) === 1);
+    check(`${label}: the counter increments`, (await budgets.bumpClient(client, hour)) === 2);
+    check(
+      `${label}: a different hour starts fresh`,
+      (await budgets.bumpClient(client, "2026-09-22T11")) === 1,
+    );
+  }
+
+  // Enforcement behaviour, driven through the guard rather than the store.
+  {
+    const budgets = new MemoryBudgetStore();
+    const guard = new SpendGuard(budgets, 1.0, 3, true);
+
+    const first = await guard.check("visitor-a");
+    check("a fresh guard allows a turn", first.allowed);
+
+    // Burn the daily budget.
+    for (let i = 0; i < 5; i++) await guard.record(usage);
+    const spent = await guard.check("visitor-b");
+    check("an exhausted daily budget refuses", !spent.allowed);
+    check(
+      "the refusal explains the rest of the app still works",
+      /still works|keeps working/i.test(spent.reason ?? ""),
+      spent.reason,
+    );
+
+    // Rate limit, on a guard with budget left.
+    const rateGuard = new SpendGuard(new MemoryBudgetStore(), 100, 3, true);
+    for (let i = 0; i < 3; i++) await rateGuard.check("noisy");
+    const fourth = await rateGuard.check("noisy");
+    check("a client over the hourly limit is refused", !fourth.allowed);
+    check("a different client is unaffected", (await rateGuard.check("quiet")).allowed);
+  }
+
+  // Off by default: local development must never be throttled.
+  {
+    const guard = new SpendGuard(new MemoryBudgetStore(), 0.0001, 1, false);
+    await guard.record(usage);
+    check("enforcement is off unless DEMO_MODE is set", (await guard.check("anyone")).allowed);
   }
 }
 
