@@ -9,7 +9,8 @@ import {
   StatusSchema,
   VariantDraftSchema,
 } from "../schemas.js";
-import { MemoryStore, StoreError } from "../store/memory.js";
+import { StoreError } from "../store/memory.js";
+import type { ContentStore } from "../store/types.js";
 import { MediaError } from "../store/media.js";
 import type { MediaStorage } from "../media/types.js";
 import { canDescribe } from "../media/describe.js";
@@ -62,7 +63,7 @@ function ok(data: unknown): string {
   return JSON.stringify({ ok: true, ...(data as object) });
 }
 
-export function createTools(store: MemoryStore, session: Session, deps: ToolDeps = {}) {
+export function createTools(store: ContentStore, session: Session, deps: ToolDeps = {}) {
   const { userId } = session;
 
   // -- reads ---------------------------------------------------------------
@@ -74,9 +75,9 @@ export function createTools(store: MemoryStore, session: Session, deps: ToolDeps
       "marketing goal, posting frequency, content pillars and banned words. Call this " +
       "before planning or writing anything — it defines the voice you must write in.",
     inputSchema: z.object({}),
-    run: () => {
+    run: async () => {
       try {
-        return ok({ profile: store.getBusinessProfile(userId) });
+        return ok({ profile: await store.getBusinessProfile(userId) });
       } catch (e) {
         return fail(e);
       }
@@ -92,9 +93,9 @@ export function createTools(store: MemoryStore, session: Session, deps: ToolDeps
       "usually both available or both broken together. Call this before promising the " +
       "user any specific format — a disconnected channel cannot be scheduled to.",
     inputSchema: z.object({}),
-    run: () => {
+    run: async () => {
       try {
-        return ok({ accounts: store.getConnectedAccounts(userId) });
+        return ok({ accounts: await store.getConnectedAccounts(userId) });
       } catch (e) {
         return fail(e);
       }
@@ -113,9 +114,9 @@ export function createTools(store: MemoryStore, session: Session, deps: ToolDeps
       to: z.string().describe("ISO date, inclusive, e.g. 2026-09-21"),
       status: StatusSchema.optional().describe("Optional filter to one status"),
     }),
-    run: (args) => {
+    run: async (args) => {
       try {
-        const items = store.getCalendar(userId, args);
+        const items = await store.getCalendar(userId, args);
         return ok({
           count: items.length,
           // Captions are omitted here on purpose: a listing is for orientation,
@@ -162,9 +163,9 @@ export function createTools(store: MemoryStore, session: Session, deps: ToolDeps
       "caption and hashtags. Use this when revising something and you need to see the " +
       "current wording.",
     inputSchema: z.object({ itemId: z.string() }),
-    run: (args) => {
+    run: async (args) => {
       try {
-        return ok({ item: store.getItem(userId, args.itemId) });
+        return ok({ item: await store.getItem(userId, args.itemId) });
       } catch (e) {
         return fail(e);
       }
@@ -187,9 +188,9 @@ export function createTools(store: MemoryStore, session: Session, deps: ToolDeps
       "Facebook tolerates links and punishes hashtag stuffing. Copy-pasting the same " +
       "caption into both is not acceptable. All variants are saved as DRAFT.",
     inputSchema: z.object({ items: z.array(ContentItemDraftSchema).min(1) }),
-    run: (args) => {
+    run: async (args) => {
       try {
-        const created = store.createContent(userId, args.items);
+        const created = await store.createContent(userId, args.items);
         return ok({
           created: created.map((i) => ({
             itemId: i.id,
@@ -220,9 +221,9 @@ export function createTools(store: MemoryStore, session: Session, deps: ToolDeps
       itemId: z.string(),
       variants: z.array(VariantDraftSchema).min(1),
     }),
-    run: (args) => {
+    run: async (args) => {
       try {
-        const added = store.addVariants(userId, args.itemId, args.variants);
+        const added = await store.addVariants(userId, args.itemId, args.variants);
         return ok({
           added: added.map((v) => ({
             variantId: v.id,
@@ -251,9 +252,9 @@ export function createTools(store: MemoryStore, session: Session, deps: ToolDeps
         .partial()
         .describe("Only the fields being changed"),
     }),
-    run: (args) => {
+    run: async (args) => {
       try {
-        const item = store.updateItem(userId, args.itemId, args.changes);
+        const item = await store.updateItem(userId, args.itemId, args.changes);
         return ok({
           itemId: item.id,
           variants: item.variants.map((v) => ({ variantId: v.id, status: v.status })),
@@ -275,9 +276,9 @@ export function createTools(store: MemoryStore, session: Session, deps: ToolDeps
       variantId: z.string(),
       changes: VariantDraftSchema.partial().describe("Only the fields being changed"),
     }),
-    run: (args) => {
+    run: async (args) => {
       try {
-        const v = store.updateVariant(userId, args.variantId, args.changes);
+        const v = await store.updateVariant(userId, args.variantId, args.changes);
         return ok({ variantId: v.id, status: v.status, scheduledFor: v.scheduledFor });
       } catch (e) {
         return fail(e);
@@ -292,14 +293,18 @@ export function createTools(store: MemoryStore, session: Session, deps: ToolDeps
       "as you can take content on your own. You CANNOT approve it — only the user can, in " +
       "the UI. After calling this, tell the user what is waiting for them.",
     inputSchema: z.object({ variantIds: z.array(z.string()).min(1) }),
-    run: (args) => {
-      const results = args.variantIds.map((id) => {
+    run: async (args) => {
+      // Sequential rather than parallel: these are small writes, and a partial
+      // failure is easier to report back when the order is deterministic.
+      const results: Array<Record<string, unknown>> = [];
+      for (const id of args.variantIds) {
         try {
-          return { variantId: id, status: store.requestApproval(userId, id).status };
+          const v = await store.requestApproval(userId, id);
+          results.push({ variantId: id, status: v.status });
         } catch (e) {
-          return { variantId: id, error: JSON.parse(fail(e)) };
+          results.push({ variantId: id, error: JSON.parse(fail(e)) });
         }
-      });
+      }
       return ok({ results });
     },
   });
@@ -494,9 +499,9 @@ export function createTools(store: MemoryStore, session: Session, deps: ToolDeps
       "attached to it by passing campaignId, which lets you build a real arc (tease, " +
       "launch, proof, last call) instead of four variations of the same announcement.",
     inputSchema: CampaignDraftSchema,
-    run: (args) => {
+    run: async (args) => {
       try {
-        const c = store.createCampaign(userId, args);
+        const c = await store.createCampaign(userId, args);
         return ok({ campaignId: c.id, name: c.name });
       } catch (e) {
         return fail(e);
@@ -511,9 +516,9 @@ export function createTools(store: MemoryStore, session: Session, deps: ToolDeps
       "the arc before adding to one, so the new piece continues the story rather than " +
       "repeating an earlier beat.",
     inputSchema: z.object({}),
-    run: () => {
+    run: async () => {
       try {
-        return ok({ campaigns: store.listCampaigns(userId) });
+        return ok({ campaigns: await store.listCampaigns(userId) });
       } catch (e) {
         return fail(e);
       }
@@ -524,9 +529,9 @@ export function createTools(store: MemoryStore, session: Session, deps: ToolDeps
     name: "get_campaign_items",
     description: "Every content item in one campaign, in planned order, with its variants.",
     inputSchema: z.object({ campaignId: z.string() }),
-    run: (args) => {
+    run: async (args) => {
       try {
-        return ok({ items: store.getCampaignItems(userId, args.campaignId) });
+        return ok({ items: await store.getCampaignItems(userId, args.campaignId) });
       } catch (e) {
         return fail(e);
       }
@@ -547,9 +552,9 @@ export function createTools(store: MemoryStore, session: Session, deps: ToolDeps
     inputSchema: z.object({
       slots: z.array(PlannedSlotSchema).min(1),
     }),
-    run: (args) => {
+    run: async (args) => {
       try {
-        const items = store.planSlots(userId, args.slots);
+        const items = await store.planSlots(userId, args.slots);
         return ok({
           planned: items.map((i) => ({
             itemId: i.id,
@@ -575,9 +580,9 @@ export function createTools(store: MemoryStore, session: Session, deps: ToolDeps
       itemId: z.string(),
       variants: z.array(VariantDraftSchema).min(1),
     }),
-    run: (args) => {
+    run: async (args) => {
       try {
-        const added = store.addVariants(userId, args.itemId, args.variants);
+        const added = await store.addVariants(userId, args.itemId, args.variants);
         return ok({
           itemId: args.itemId,
           written: added.map((v) => ({

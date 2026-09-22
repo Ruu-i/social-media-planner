@@ -8,8 +8,12 @@ out/
 .env.*
 !.env.example
 
-# uploaded photos and videos — user data, never commit
-media/
+# Uploaded photos and videos — user data, never commit.
+# Anchored with a leading slash: a bare `media/` also matches src/media/,
+# which silently excluded real source files.
+/media/
 
 # vite build output
 web/dist/
+
+.ddb-local/

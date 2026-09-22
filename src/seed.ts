@@ -8,6 +8,16 @@ import { MemoryStore } from "./store/memory.js";
 import { ConnectionStore } from "./store/connections.js";
 import { MockScheduler } from "./scheduler/mock.js";
 import type { Scheduler } from "./scheduler/types.js";
+import type { ContentStore } from "./store/types.js";
+import { DynamoStore } from "./store/dynamo.js";
+import {
+  createDynamoClient,
+  createTable,
+  dropTable,
+  key,
+  TABLE_NAME,
+} from "./store/dynamo-table.js";
+import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { MediaStore } from "./store/media.js";
 import { aspectRatioOf, type MediaAsset } from "./media/types.js";
 
@@ -281,3 +291,81 @@ export function createStoreWithPersonalInstagram(): MemoryStore {
 }
 
 export { profile as demoProfile, channels as demoChannels };
+
+
+// ---------------------------------------------------------------------------
+// Store factory
+// ---------------------------------------------------------------------------
+
+/**
+ * Build whichever store STORE says, seeded identically.
+ *
+ * This exists so the SAME assertion suite runs against both implementations.
+ * Parity between an in-memory Map and a database is not something to read the
+ * code and believe — it is something to prove by running the tests twice.
+ *
+ *   STORE=memory  (default)  MemoryStore
+ *   STORE=dynamo             DynamoStore against DDB_ENDPOINT
+ */
+export async function createStore(
+  scheduler: Scheduler = new MockScheduler(),
+  media: MediaStore = createMediaStore(),
+): Promise<ContentStore> {
+  if ((process.env.STORE ?? "memory") !== "dynamo") {
+    return createSeededStore(scheduler, media);
+  }
+
+  const client = createDynamoClient();
+
+  // A fresh table per store keeps tests isolated — the same guarantee the
+  // in-memory implementation gets for free by constructing a new Map.
+  const table = `${TABLE_NAME}-${Math.random().toString(36).slice(2, 8)}`;
+  await dropTable(client, table);
+  await createTable(client, table);
+
+  const store = new DynamoStore(
+    client,
+    profile,
+    createConnectionStore(),
+    scheduler,
+    media,
+    table,
+  );
+
+  // Write the seed content directly, using the same key scheme the store uses.
+  for (const item of seedContent()) {
+    const { variants, ...rest } = item;
+    await client.send(
+      new PutCommand({
+        TableName: table,
+        Item: { PK: key.user(rest.userId), SK: key.item(rest.id), ...rest },
+      }),
+    );
+    for (const v of variants) {
+      await client.send(
+        new PutCommand({
+          TableName: table,
+          Item: {
+            PK: key.user(v.userId),
+            SK: key.variant(v.id),
+            GSI1PK: key.item(v.itemId),
+            GSI1SK: key.variant(v.id),
+            ...(v.status === "SCHEDULED"
+              ? { GSI2PK: key.dueStatus(), GSI2SK: v.scheduledFor }
+              : {}),
+            ...v,
+          },
+        }),
+      );
+      // The pointer row that lets the publisher find a variant by id alone.
+      await client.send(
+        new PutCommand({
+          TableName: table,
+          Item: { PK: key.variant(v.id), SK: "PTR", userId: v.userId, variantId: v.id },
+        }),
+      );
+    }
+  }
+
+  return store;
+}

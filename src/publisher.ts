@@ -1,6 +1,6 @@
 import type { SocialConnector, TokenProvider } from "./connectors/types.js";
 import { PublishError } from "./connectors/types.js";
-import type { MemoryStore } from "./store/memory.js";
+import type { ContentStore } from "./store/types.js";
 import type { Platform, Provider } from "./schemas.js";
 
 /**
@@ -36,7 +36,7 @@ export class Publisher {
   private connectors = new Map<Provider, SocialConnector>();
 
   constructor(
-    private store: MemoryStore,
+    private store: ContentStore,
     private tokens: TokenProvider,
     connectors: SocialConnector[],
     private log: (line: string) => void = () => {},
@@ -46,7 +46,7 @@ export class Publisher {
 
   /** One sweep of everything whose moment has passed. */
   async publishDue(userId: string, now = new Date()): Promise<PublishOutcome[]> {
-    const due = this.store.getDueVariants(now);
+    const due = await this.store.getDueVariants(now);
     const outcomes: PublishOutcome[] = [];
     for (const variant of due) {
       if (variant.userId !== userId) continue;
@@ -56,7 +56,7 @@ export class Publisher {
   }
 
   async publishOne(userId: string, variantId: string): Promise<PublishOutcome> {
-    const variant = this.store.getVariant(userId, variantId);
+    const variant = await this.store.getVariant(userId, variantId);
     const connections = this.store.connectionStore;
 
     // Already done. A redelivered message must be a no-op, not a second post.
@@ -81,13 +81,13 @@ export class Publisher {
     const channel = connections.getChannel(userId, variant.channelId);
     const connection = connections.getConnectionForChannel(userId, variant.channelId);
     if (!channel || !connection) {
-      this.store.markFailed(variantId, "Channel or connection no longer exists");
+      await this.store.markFailed(variantId, "Channel or connection no longer exists");
       return { variantId, platform: variant.platform, status: "FAILED", detail: "no channel" };
     }
 
     const connector = this.connectors.get(connection.provider);
     if (!connector) {
-      this.store.markFailed(variantId, `No connector for ${connection.provider}`);
+      await this.store.markFailed(variantId, `No connector for ${connection.provider}`);
       return { variantId, platform: variant.platform, status: "FAILED", detail: "no connector" };
     }
 
@@ -112,7 +112,7 @@ export class Publisher {
         accessToken,
       );
 
-      this.store.markPublished(variantId, result.platformPostId, result.permalink);
+      await this.store.markPublished(variantId, result.platformPostId, result.permalink);
       return {
         variantId,
         platform: channel.platform,
@@ -120,16 +120,16 @@ export class Publisher {
         detail: result.platformPostId,
       };
     } catch (error) {
-      return this.handleFailure(variantId, channel.platform, connection.id, error);
+      return await this.handleFailure(variantId, channel.platform, connection.id, error);
     }
   }
 
-  private handleFailure(
+  private async handleFailure(
     variantId: string,
     platform: Platform,
     connectionId: string,
     error: unknown,
-  ): PublishOutcome {
+  ): Promise<PublishOutcome> {
     const connections = this.store.connectionStore;
 
     if (error instanceof PublishError) {
@@ -139,7 +139,7 @@ export class Publisher {
           // is now broken. Mark the CONNECTION, not the channel, so the user is
           // told to reconnect Meta once rather than chasing each platform.
           connections.markReauthRequired(connectionId);
-          this.store.markFailed(variantId, `Authentication failed: ${error.message}`);
+          await this.store.markFailed(variantId, `Authentication failed: ${error.message}`);
           this.log(`  connection ${connectionId} needs reauthorisation`);
           return { variantId, platform, status: "FAILED", detail: "auth — reconnect required" };
 
@@ -147,11 +147,11 @@ export class Publisher {
         case "TRANSIENT":
           // Leave it SCHEDULED. The next sweep picks it up, and the idempotency
           // key means a retry that partly succeeded cannot post twice.
-          this.store.recordRetryableFailure(variantId, error.message);
+          await this.store.recordRetryableFailure(variantId, error.message);
           return { variantId, platform, status: "RETRY", detail: error.message };
 
         case "PERMANENT":
-          this.store.markFailed(variantId, error.message);
+          await this.store.markFailed(variantId, error.message);
           return { variantId, platform, status: "FAILED", detail: error.message };
       }
     }
@@ -160,7 +160,7 @@ export class Publisher {
     // something we do not understand against a real account is worse than
     // stopping and telling the user.
     const message = error instanceof Error ? error.message : String(error);
-    this.store.markFailed(variantId, message);
+    await this.store.markFailed(variantId, message);
     return { variantId, platform, status: "FAILED", detail: message };
   }
 }

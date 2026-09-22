@@ -52,7 +52,7 @@ function fail(res: express.Response, error: unknown) {
 
 // -- conversation ------------------------------------------------------------
 
-app.post("/api/sessions", (_req, res) => {
+app.post("/api/sessions", async (_req, res) => {
   res.json({ sessionId: createSession() });
 });
 
@@ -161,17 +161,17 @@ ${message}`;
 
 // -- calendar ----------------------------------------------------------------
 
-app.get("/api/calendar", (_req, res) => {
+app.get("/api/calendar", async (_req, res) => {
   try {
-    res.json({ items: store.getCalendar(USER_ID) });
+    res.json({ items: await store.getCalendar(USER_ID) });
   } catch (e) {
     fail(res, e);
   }
 });
 
-app.get("/api/items/:id", (req, res) => {
+app.get("/api/items/:id", async (req, res) => {
   try {
-    res.json({ item: store.getItem(USER_ID, req.params.id) });
+    res.json({ item: await store.getItem(USER_ID, req.params.id) });
   } catch (e) {
     fail(res, e);
   }
@@ -184,9 +184,9 @@ app.get("/api/items/:id", (req, res) => {
  * and calls the store directly — there is no tool that reaches this code, so an
  * agent cannot approve its own work no matter what it is told.
  */
-app.post("/api/variants/:id/approve", (req, res) => {
+app.post("/api/variants/:id/approve", async (req, res) => {
   try {
-    res.json({ variant: store.humanApprove(USER_ID, req.params.id) });
+    res.json({ variant: await store.humanApprove(USER_ID, req.params.id) });
   } catch (e) {
     fail(res, e);
   }
@@ -211,7 +211,7 @@ app.post("/api/publish/run", async (_req, res) => {
 
 // -- media -------------------------------------------------------------------
 
-app.get("/api/media", (_req, res) => {
+app.get("/api/media", async (_req, res) => {
   try {
     res.json({ assets: media.search(USER_ID, { limit: 100 }) });
   } catch (e) {
@@ -290,7 +290,7 @@ app.post("/api/media", async (req, res) => {
     }
 
     // --- image -------------------------------------------------------------
-    const profile = store.getBusinessProfile(USER_ID);
+    const profile = await store.getBusinessProfile(USER_ID);
     const described = await describeImage(data, mimeType, {
       businessName: profile.businessName,
       industry: profile.industry,
@@ -338,9 +338,9 @@ app.get("/api/media/:id/file", async (req, res) => {
 
 // -- accounts ----------------------------------------------------------------
 
-app.get("/api/accounts", (_req, res) => {
+app.get("/api/accounts", async (_req, res) => {
   try {
-    res.json({ accounts: store.getConnectedAccounts(USER_ID) });
+    res.json({ accounts: await store.getConnectedAccounts(USER_ID) });
   } catch (e) {
     fail(res, e);
   }

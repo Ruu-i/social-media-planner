@@ -3,6 +3,19 @@ import { randomUUID } from "node:crypto";
 import type { Scheduler } from "../scheduler/types.js";
 import type { ConnectionStore } from "./connections.js";
 import type { MediaStore } from "./media.js";
+import type { ContentStore } from "./types.js";
+import {
+  assertAgentTransition,
+  assertFutureTime,
+  assertHasOffset,
+  assertSchedulable,
+  assertVariantValid,
+  approvalSurvives,
+  StoreError,
+} from "./rules.js";
+
+// Re-exported so existing imports from this module keep resolving.
+export { StoreError };
 import {
   AGENT_TRANSITIONS,
   type BusinessProfile,
@@ -30,21 +43,7 @@ import {
  *   The agent supplies intent. The backend decides authority.
  */
 
-export class StoreError extends Error {
-  constructor(
-    message: string,
-    readonly code:
-      | "NOT_FOUND"
-      | "FORBIDDEN"
-      | "INVALID_STATE"
-      | "INVALID_INPUT"
-      | "NOT_CONNECTED",
-  ) {
-    super(message);
-  }
-}
-
-export class MemoryStore {
+export class MemoryStore implements ContentStore {
   private items = new Map<string, ContentItem>();
   private variants = new Map<string, PostVariant>();
   private campaigns = new Map<string, Campaign>();
@@ -64,19 +63,23 @@ export class MemoryStore {
     }
   }
 
+  private get deps() {
+    return { connections: this.connections, media: this.media };
+  }
+
   // -- reads ---------------------------------------------------------------
 
-  getBusinessProfile(_userId: string): BusinessProfile {
+  async getBusinessProfile(_userId: string): Promise<BusinessProfile> {
     return this.profile;
   }
 
-  getConnectedAccounts(userId: string) {
+  async getConnectedAccounts(userId: string) {
     return this.connections.listChannels(userId);
   }
 
   // -- campaigns -----------------------------------------------------------
 
-  createCampaign(userId: string, draft: CampaignDraft): Campaign {
+  async createCampaign(userId: string, draft: CampaignDraft): Promise<Campaign> {
     const campaign: Campaign = {
       ...draft,
       id: `camp_${randomUUID().slice(0, 8)}`,
@@ -87,7 +90,7 @@ export class MemoryStore {
     return campaign;
   }
 
-  listCampaigns(userId: string): Array<Campaign & { itemCount: number }> {
+  async listCampaigns(userId: string): Promise<Array<Campaign & { itemCount: number }>> {
     return [...this.campaigns.values()]
       .filter((c) => c.userId === userId)
       .map((c) => ({
@@ -96,7 +99,7 @@ export class MemoryStore {
       }));
   }
 
-  getCampaignItems(userId: string, campaignId: string): ContentItemWithVariants[] {
+  async getCampaignItems(userId: string, campaignId: string): Promise<ContentItemWithVariants[]> {
     const campaign = this.campaigns.get(campaignId);
     if (!campaign || campaign.userId !== userId) {
       throw new StoreError(`No campaign ${campaignId}`, "NOT_FOUND");
@@ -108,10 +111,10 @@ export class MemoryStore {
   }
 
   /** Items with their variants, filtered by the variants' scheduled dates. */
-  getCalendar(
+  async getCalendar(
     userId: string,
     opts: { from?: string; to?: string; status?: Status } = {},
-  ): ContentItemWithVariants[] {
+  ): Promise<ContentItemWithVariants[]> {
     const out: ContentItemWithVariants[] = [];
     for (const item of this.items.values()) {
       if (item.userId !== userId) continue;
@@ -141,7 +144,7 @@ export class MemoryStore {
     return out.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
   }
 
-  getItem(userId: string, itemId: string): ContentItemWithVariants {
+  async getItem(userId: string, itemId: string): Promise<ContentItemWithVariants> {
     const item = this.items.get(itemId);
     // Ownership is checked before existence is revealed, so probing for another
     // user's id is indistinguishable from a miss.
@@ -151,7 +154,7 @@ export class MemoryStore {
     return { ...item, variants: this.variantsOf(itemId) };
   }
 
-  getVariant(userId: string, variantId: string): PostVariant {
+  async getVariant(userId: string, variantId: string): Promise<PostVariant> {
     const variant = this.variants.get(variantId);
     if (!variant || variant.userId !== userId) {
       throw new StoreError(`No variant ${variantId}`, "NOT_FOUND");
@@ -162,14 +165,14 @@ export class MemoryStore {
   // -- writes the agent may perform ----------------------------------------
 
   /** Every variant lands in DRAFT. The agent cannot create one in any other state. */
-  createContent(userId: string, drafts: ContentItemDraft[]): ContentItemWithVariants[] {
+  async createContent(userId: string, drafts: ContentItemDraft[]): Promise<ContentItemWithVariants[]> {
     const created: ContentItemWithVariants[] = [];
 
     for (const draft of drafts) {
       const { variants: variantDrafts, ...itemFields } = draft;
       // Validate every variant before writing anything, so a bad third variant
       // cannot leave the first two persisted.
-      for (const v of variantDrafts) this.assertVariantValid(userId, v);
+      for (const v of variantDrafts) assertVariantValid(this.deps, userId, v);
 
       const now = new Date().toISOString();
       const { campaignId, ...rest } = itemFields;
@@ -200,10 +203,10 @@ export class MemoryStore {
    * produces a response nobody reads. Planning slots first is both cheaper and
    * closer to how people actually work — agree the shape, then write it.
    */
-  planSlots(userId: string, slots: PlannedSlot[]): ContentItem[] {
+  async planSlots(userId: string, slots: PlannedSlot[]): Promise<ContentItem[]> {
     // Validate every slot before writing any, same rule as content.
     for (const slot of slots) {
-      this.assertHasOffset(slot.plannedFor);
+      assertHasOffset(slot.plannedFor);
       for (const channelId of slot.plannedChannelIds) {
         const channel = this.connections.getChannel(userId, channelId);
         if (!channel) {
@@ -238,9 +241,9 @@ export class MemoryStore {
   }
 
   /** Fan an existing idea out to more channels. */
-  addVariants(userId: string, itemId: string, drafts: VariantDraft[]): PostVariant[] {
-    this.getItem(userId, itemId); // ownership + existence
-    for (const v of drafts) this.assertVariantValid(userId, v);
+  async addVariants(userId: string, itemId: string, drafts: VariantDraft[]): Promise<PostVariant[]> {
+    await this.getItem(userId, itemId); // ownership + existence
+    for (const v of drafts) assertVariantValid(this.deps, userId, v);
     return drafts.map((v) => this.insertVariant(userId, itemId, v));
   }
 
@@ -251,12 +254,12 @@ export class MemoryStore {
    * approval was given for copy that expressed the OLD idea; once the idea
    * changes, that approval no longer means what it meant.
    */
-  updateItem(
+  async updateItem(
     userId: string,
     itemId: string,
     changes: Partial<Omit<ContentItemDraft, "variants">>,
-  ): ContentItemWithVariants {
-    const { variants, ...item } = this.getItem(userId, itemId);
+  ): Promise<ContentItemWithVariants> {
+    const { variants, ...item } = await this.getItem(userId, itemId);
     const next: ContentItem = { ...item, ...changes, updatedAt: new Date().toISOString() };
     this.items.set(itemId, next);
 
@@ -270,12 +273,12 @@ export class MemoryStore {
       }
     }
 
-    return this.getItem(userId, itemId);
+    return await this.getItem(userId, itemId);
   }
 
   /** Edit one platform's copy or timing. */
-  updateVariant(userId: string, variantId: string, changes: Partial<VariantDraft>): PostVariant {
-    const variant = this.getVariant(userId, variantId);
+  async updateVariant(userId: string, variantId: string, changes: Partial<VariantDraft>): Promise<PostVariant> {
+    const variant = await this.getVariant(userId, variantId);
 
     // Published content is immutable. Editing it locally would silently diverge
     // from what is actually live on the platform.
@@ -284,7 +287,7 @@ export class MemoryStore {
     }
 
     const next: PostVariant = { ...variant, ...changes, updatedAt: new Date().toISOString() };
-    const channel = this.assertVariantValid(userId, next);
+    const channel = assertVariantValid(this.deps, userId, next);
     next.platform = channel.platform;
 
     // The human approved WORDS, not a slot in the calendar. A pure time change
@@ -299,17 +302,17 @@ export class MemoryStore {
     return next;
   }
 
-  requestApproval(userId: string, variantId: string): PostVariant {
-    return this.transition(userId, variantId, "PENDING_APPROVAL");
+  async requestApproval(userId: string, variantId: string): Promise<PostVariant> {
+    return await this.transition(userId, variantId, "PENDING_APPROVAL");
   }
 
   async cancelVariant(userId: string, variantId: string): Promise<PostVariant> {
-    const variant = this.getVariant(userId, variantId);
+    const variant = await this.getVariant(userId, variantId);
     // Drop the timer before the status change, or a cancelled post still fires.
     if (variant.scheduleId) await this.scheduler.cancel(variant.scheduleId);
-    const next = this.transition(userId, variantId, "CANCELLED");
+    const next = await this.transition(userId, variantId, "CANCELLED");
     this.variants.set(next.id, { ...next, scheduleId: null });
-    return this.getVariant(userId, variantId);
+    return await this.getVariant(userId, variantId);
   }
 
   /**
@@ -325,9 +328,9 @@ export class MemoryStore {
     // Replay protection. An agent loop retry, an SQS redelivery, or a Lambda
     // that timed out *after* the effect landed must not double-post.
     const seen = this.idempotencyKeys.get(idempotencyKey);
-    if (seen) return this.getVariant(userId, seen);
+    if (seen) return await this.getVariant(userId, seen);
 
-    const variant = this.getVariant(userId, variantId);
+    const variant = await this.getVariant(userId, variantId);
 
     if (variant.status !== "APPROVED") {
       throw new StoreError(
@@ -342,7 +345,7 @@ export class MemoryStore {
       throw new StoreError(publishable.reason ?? "Channel cannot publish", "NOT_CONNECTED");
     }
 
-    this.assertHasOffset(scheduledFor);
+    assertHasOffset(scheduledFor);
     if (new Date(scheduledFor).getTime() <= Date.now()) {
       throw new StoreError(`${scheduledFor} is in the past`, "INVALID_INPUT");
     }
@@ -402,7 +405,7 @@ export class MemoryStore {
       }
       seen.add(move.variantId);
 
-      const variant = this.getVariant(userId, move.variantId);
+      const variant = await this.getVariant(userId, move.variantId);
       if (variant.status === "PUBLISHED" || variant.status === "CANCELLED") {
         throw new StoreError(
           `Cannot reschedule a ${variant.status} variant (${move.variantId})`,
@@ -410,7 +413,7 @@ export class MemoryStore {
         );
       }
 
-      this.assertHasOffset(move.scheduledFor);
+      assertHasOffset(move.scheduledFor);
       if (new Date(move.scheduledFor).getTime() <= Date.now()) {
         throw new StoreError(`${move.scheduledFor} is in the past`, "INVALID_INPUT");
       }
@@ -503,14 +506,14 @@ export class MemoryStore {
   // the model deciding it is time — so there is no path from the agent here.
 
   /** SCHEDULED variants whose moment has arrived. The publisher's work queue. */
-  getDueVariants(now = new Date()): PostVariant[] {
+  async getDueVariants(now = new Date()): Promise<PostVariant[]> {
     return [...this.variants.values()]
       .filter((v) => v.status === "SCHEDULED")
       .filter((v) => new Date(v.scheduledFor).getTime() <= now.getTime())
       .sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor));
   }
 
-  markPublished(variantId: string, platformPostId: string, permalink: string | null): PostVariant {
+  async markPublished(variantId: string, platformPostId: string, permalink: string | null): Promise<PostVariant> {
     const variant = this.variants.get(variantId);
     if (!variant) throw new StoreError(`No variant ${variantId}`, "NOT_FOUND");
 
@@ -529,7 +532,7 @@ export class MemoryStore {
     return next;
   }
 
-  markFailed(variantId: string, reason: string): PostVariant {
+  async markFailed(variantId: string, reason: string): Promise<PostVariant> {
     const variant = this.variants.get(variantId);
     if (!variant) throw new StoreError(`No variant ${variantId}`, "NOT_FOUND");
     const next: PostVariant = {
@@ -544,7 +547,7 @@ export class MemoryStore {
   }
 
   /** A retryable failure leaves the variant SCHEDULED so the next sweep sees it. */
-  recordRetryableFailure(variantId: string, reason: string): PostVariant {
+  async recordRetryableFailure(variantId: string, reason: string): Promise<PostVariant> {
     const variant = this.variants.get(variantId);
     if (!variant) throw new StoreError(`No variant ${variantId}`, "NOT_FOUND");
     const next: PostVariant = { ...variant, failureReason: reason, updatedAt: new Date().toISOString() };
@@ -568,7 +571,7 @@ export class MemoryStore {
    * which makes "a variant whose moment has arrived" otherwise impossible to
    * construct without waiting. Not exposed as a tool and not used in src/cli.
    */
-  rescheduleForTest(variantId: string, scheduledFor: string): void {
+  async rescheduleForTest(variantId: string, scheduledFor: string): Promise<void> {
     const variant = this.variants.get(variantId);
     if (variant) this.variants.set(variantId, { ...variant, scheduledFor });
   }
@@ -582,8 +585,8 @@ export class MemoryStore {
    * If you ever find yourself wiring this into a tool, stop — that is the whole
    * safety property of this design.
    */
-  humanApprove(userId: string, variantId: string): PostVariant {
-    const variant = this.getVariant(userId, variantId);
+  async humanApprove(userId: string, variantId: string): Promise<PostVariant> {
+    const variant = await this.getVariant(userId, variantId);
     if (variant.status !== "PENDING_APPROVAL" && variant.status !== "DRAFT") {
       throw new StoreError(`Cannot approve a ${variant.status} variant`, "INVALID_STATE");
     }
@@ -606,7 +609,7 @@ export class MemoryStore {
   }
 
   private insertVariant(userId: string, itemId: string, draft: VariantDraft): PostVariant {
-    const channel = this.assertVariantValid(userId, draft);
+    const channel = assertVariantValid(this.deps, userId, draft);
     const now = new Date().toISOString();
     const variant: PostVariant = {
       ...draft,
@@ -630,8 +633,8 @@ export class MemoryStore {
     return variant;
   }
 
-  private transition(userId: string, variantId: string, to: Status): PostVariant {
-    const variant = this.getVariant(userId, variantId);
+  private async transition(userId: string, variantId: string, to: Status): Promise<PostVariant> {
+    const variant = await this.getVariant(userId, variantId);
     const allowed = AGENT_TRANSITIONS[variant.status] ?? [];
     if (!allowed.includes(to)) {
       throw new StoreError(
@@ -645,63 +648,7 @@ export class MemoryStore {
     return next;
   }
 
-  /** Resolves the channel and checks the variant against what it can do. */
-  private assertVariantValid(userId: string, v: VariantDraft) {
-    const channel = this.connections.getChannel(userId, v.channelId);
-    if (!channel) {
-      throw new StoreError(
-        `No channel ${v.channelId}. Call get_connected_accounts for valid ids.`,
-        "INVALID_INPUT",
-      );
-    }
 
-    if (!channel.supportedFormats.includes(v.media.format)) {
-      throw new StoreError(
-        `${channel.handle} (${channel.platform}) does not support ${v.media.format}. ` +
-          `It supports: ${channel.supportedFormats.join(", ")}`,
-        "INVALID_INPUT",
-      );
-    }
-    if (v.caption.length > channel.maxCaptionLength) {
-      throw new StoreError(
-        `Caption is ${v.caption.length} characters; ${channel.handle} allows ` +
-          `${channel.maxCaptionLength}`,
-        "INVALID_INPUT",
-      );
-    }
-    if (v.hashtags.length > channel.maxHashtags) {
-      throw new StoreError(
-        `${v.hashtags.length} hashtags; ${channel.handle} allows ${channel.maxHashtags}`,
-        "INVALID_INPUT",
-      );
-    }
-    // Assets must fit the format they are being used in — a landscape photo in
-    // a Reel is wrong before anyone reads the caption.
-    if (this.media && v.assetIds.length > 0) {
-      this.media.assertSuitableFor(userId, v.assetIds, v.media.format);
-    }
-
-    this.assertHasOffset(v.scheduledFor);
-    return channel;
-  }
-
-  /**
-   * A datetime with no offset is the bug that publishes five and a half hours
-   * late in Colombo. Reject it at the boundary rather than storing something
-   * whose meaning depends on which machine reads it.
-   */
-  private assertHasOffset(value: string) {
-    if (!/(?:Z|[+-]\d{2}:?\d{2})$/.test(value.trim())) {
-      throw new StoreError(
-        `"${value}" has no timezone offset. Use a full ISO 8601 value such as ` +
-          `2026-09-14T11:00:00+05:30 so the time means the same thing everywhere.`,
-        "INVALID_INPUT",
-      );
-    }
-    if (Number.isNaN(new Date(value).getTime())) {
-      throw new StoreError(`"${value}" is not a valid datetime`, "INVALID_INPUT");
-    }
-  }
 }
 
 function sortKey(item: ContentItemWithVariants): string {

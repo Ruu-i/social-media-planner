@@ -10,10 +10,17 @@
     "typecheck": "tsc --noEmit",
     "api": "tsx watch src/server/index.ts",
     "web": "npm --prefix web run dev",
-    "web:install": "npm --prefix web install"
+    "web:install": "npm --prefix web install",
+    "bedrock:check": "tsx src/bedrock-check.ts",
+    "verify:dynamo": "node scripts/verify-dynamo.mjs",
+    "verify:both": "npm run verify && npm run verify:dynamo",
+    "ddb:start": "node scripts/ddb-start.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/bedrock-sdk": "^0.33.7",
     "@anthropic-ai/sdk": "^0.125.0",
+    "@aws-sdk/client-dynamodb": "^3.1136.0",
+    "@aws-sdk/lib-dynamodb": "^3.1136.0",
     "cors": "^2.8.6",
     "dotenv": "^16.4.5",
     "express": "^5.2.1",

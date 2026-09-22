@@ -1,5 +1,6 @@
 import {
   createMediaStore,
+  createStore,
   createSeededStore,
   createStoreWithExpiredConnection,
   createStoreWithPersonalInstagram,
@@ -19,7 +20,11 @@ import { VariantDraftSchema, type ContentItemDraft, type VariantDraft } from "./
  * checked in code rather than trusted to a prompt.
  */
 
-const store = createSeededStore();
+const STORE_KIND = process.env.STORE ?? "memory";
+console.log(`
+  store: ${STORE_KIND}
+`);
+const store = await createStore();
 let pass = 0;
 let fail = 0;
 
@@ -62,13 +67,13 @@ const item = (over: Partial<ContentItemDraft> = {}): ContentItemDraft => ({
 
 // -- the approval boundary ---------------------------------------------------
 
-const [i1] = store.createContent(USER_ID, [item()]);
+const [i1] = await store.createContent(USER_ID, [item()]);
 const v1 = i1!.variants[0]!;
 
 check("new variants start as DRAFT", v1.status === "DRAFT", `got ${v1.status}`);
 
 try {
-  store.requestApproval(USER_ID, v1.id);
+  await store.requestApproval(USER_ID, v1.id);
   check("agent can move DRAFT -> PENDING_APPROVAL", true);
 } catch (e) {
   check("agent can move DRAFT -> PENDING_APPROVAL", false, String(e));
@@ -84,7 +89,7 @@ try {
   );
 }
 
-store.humanApprove(USER_ID, v1.id);
+await store.humanApprove(USER_ID, v1.id);
 const when = future(2);
 const s1 = await store.scheduleVariant(USER_ID, v1.id, when, "key-abc");
 check("scheduling works after a human approves", s1.status === "SCHEDULED");
@@ -94,7 +99,7 @@ check("idempotent replay returns the same variant", s2.id === s1.id);
 
 // -- item / variant relationship --------------------------------------------
 
-const [cross] = store.createContent(USER_ID, [
+const [cross] = await store.createContent(USER_ID, [
   item({
     topic: "Weekend cupping",
     variants: [
@@ -109,7 +114,7 @@ check(
   cross!.variants.every((v) => v.itemId === cross!.id),
 );
 
-const added = store.addVariants(USER_ID, cross!.id, [
+const added = await store.addVariants(USER_ID, cross!.id, [
   variant({
     channelId: FB,
     media: { format: "STORY", visual: "Counter shot.", interaction: "poll", interactionPrompt: "Milk or no milk?" },
@@ -118,11 +123,11 @@ const added = store.addVariants(USER_ID, cross!.id, [
   }),
 ]);
 check("add_variants attaches to the existing idea", added[0]!.itemId === cross!.id);
-check("item now has three variants", store.getItem(USER_ID, cross!.id).variants.length === 3);
+check("item now has three variants", (await store.getItem(USER_ID, cross!.id)).variants.length === 3);
 
 // Cancelling one channel must leave the idea and its siblings intact.
 await store.cancelVariant(USER_ID, added[0]!.id);
-const afterCancel = store.getItem(USER_ID, cross!.id);
+const afterCancel = await store.getItem(USER_ID, cross!.id);
 check(
   "cancelling one variant leaves the others alone",
   afterCancel.variants.filter((v) => v.status !== "CANCELLED").length === 2,
@@ -131,26 +136,26 @@ check(
 // -- approval scoping --------------------------------------------------------
 
 const igVariant = cross!.variants.find((v) => v.platform === "instagram")!;
-store.humanApprove(USER_ID, igVariant.id);
-const moved = store.updateVariant(USER_ID, igVariant.id, { scheduledFor: future(3) });
+await store.humanApprove(USER_ID, igVariant.id);
+const moved = await store.updateVariant(USER_ID, igVariant.id, { scheduledFor: future(3) });
 check("a time-only change KEEPS approval", moved.status === "APPROVED", `got ${moved.status}`);
 
-const reworded = store.updateVariant(USER_ID, igVariant.id, { caption: "Totally new words." });
+const reworded = await store.updateVariant(USER_ID, igVariant.id, { caption: "Totally new words." });
 check("a content change REVOKES approval", reworded.status === "DRAFT", `got ${reworded.status}`);
 
 // Editing the shared idea invalidates approvals on every variant beneath it.
 const fbVariant = cross!.variants.find((v) => v.platform === "facebook")!;
-store.humanApprove(USER_ID, fbVariant.id);
-store.updateItem(USER_ID, cross!.id, { coreMessage: "An entirely different message." });
+await store.humanApprove(USER_ID, fbVariant.id);
+await store.updateItem(USER_ID, cross!.id, { coreMessage: "An entirely different message." });
 check(
   "editing the idea REVOKES approval on its variants",
-  store.getVariant(USER_ID, fbVariant.id).status === "DRAFT",
+  (await store.getVariant(USER_ID, fbVariant.id)).status === "DRAFT",
 );
 
 // -- timezone correctness ----------------------------------------------------
 
 try {
-  store.createContent(USER_ID, [
+  await store.createContent(USER_ID, [
     item({ variants: [variant({ scheduledFor: "2026-09-21T11:00:00" })] }),
   ]);
   check("naive datetime (no offset) is rejected", false, "it succeeded!");
@@ -161,7 +166,7 @@ try {
   );
 }
 
-const [tz] = store.createContent(USER_ID, [
+const [tz] = await store.createContent(USER_ID, [
   item({ variants: [variant({ scheduledFor: "2126-09-21T11:00:00+05:30" })] }),
 ]);
 check("datetime with offset is accepted", tz!.variants[0]!.scheduledFor.endsWith("+05:30"));
@@ -178,8 +183,8 @@ check(
 // -- capability and ownership ------------------------------------------------
 
 const fbOff = createStoreWithExpiredConnection();
-const [d1] = fbOff.createContent(USER_ID, [item({ variants: [variant({ channelId: FB, hashtags: [] })] })]);
-fbOff.humanApprove(USER_ID, d1!.variants[0]!.id);
+const [d1] = await fbOff.createContent(USER_ID, [item({ variants: [variant({ channelId: FB, hashtags: [] })] })]);
+await fbOff.humanApprove(USER_ID, d1!.variants[0]!.id);
 try {
   await fbOff.scheduleVariant(USER_ID, d1!.variants[0]!.id, future(), "key-fb");
   check("an expired connection blocks scheduling", false, "it succeeded!");
@@ -192,25 +197,25 @@ try {
 }
 
 try {
-  store.getVariant("user_attacker", v1.id);
+  await store.getVariant("user_attacker", v1.id);
   check("cross-user read is refused", false, "it succeeded!");
 } catch (e) {
   check("cross-user read is refused", e instanceof StoreError && e.code === "NOT_FOUND");
 }
 
 // A bad variant must not leave its siblings half-written.
-const countBefore = store.getCalendar(USER_ID).length;
+const countBefore = (await store.getCalendar(USER_ID)).length;
 try {
-  store.createContent(USER_ID, [
+  await store.createContent(USER_ID, [
     item({ variants: [variant(), variant({ scheduledFor: "not-a-date" })] }),
   ]);
   check("a partially invalid item writes nothing", false, "it succeeded!");
 } catch {
-  check("a partially invalid item writes nothing", store.getCalendar(USER_ID).length === countBefore);
+  check("a partially invalid item writes nothing", (await store.getCalendar(USER_ID)).length === countBefore);
 }
 
-const [p6] = store.createContent(USER_ID, [item()]);
-store.humanApprove(USER_ID, p6!.variants[0]!.id);
+const [p6] = await store.createContent(USER_ID, [item()]);
+await store.humanApprove(USER_ID, p6!.variants[0]!.id);
 try {
   await store.scheduleVariant(USER_ID, p6!.variants[0]!.id, "2020-01-01T10:00:00Z", "key-past");
   check("a past datetime is refused", false, "it succeeded!");
@@ -222,15 +227,15 @@ try {
 
 {
   const sched = new MockScheduler();
-  const st = createSeededStore(sched);
+  const st = await createStore(sched);
 
-  const [a] = st.createContent(USER_ID, [item({ variants: [variant({ scheduledFor: future(2) })] })]);
-  const [b] = st.createContent(USER_ID, [item({ variants: [variant({ scheduledFor: future(3) })] })]);
+  const [a] = await st.createContent(USER_ID, [item({ variants: [variant({ scheduledFor: future(2) })] })]);
+  const [b] = await st.createContent(USER_ID, [item({ variants: [variant({ scheduledFor: future(3) })] })]);
   const av = a!.variants[0]!;
   const bv = b!.variants[0]!;
 
   // A SCHEDULED variant has a live timer that must move with it.
-  st.humanApprove(USER_ID, av.id);
+  await st.humanApprove(USER_ID, av.id);
   const scheduled = await st.scheduleVariant(USER_ID, av.id, future(2), "resched-key");
   const firstJob = scheduled.scheduleId!;
   check("scheduling creates a timer", sched.pending().length === 1 && !!firstJob);
@@ -258,8 +263,8 @@ try {
   check("bulk move returns every variant", bulk.length === 2);
 
   // Atomicity: one bad move rejects the whole batch.
-  const beforeA = st.getVariant(USER_ID, av.id).scheduledFor;
-  const beforeB = st.getVariant(USER_ID, bv.id).scheduledFor;
+  const beforeA = (await st.getVariant(USER_ID, av.id)).scheduledFor;
+  const beforeB = (await st.getVariant(USER_ID, bv.id)).scheduledFor;
   try {
     await st.rescheduleVariants(USER_ID, [
       { variantId: av.id, scheduledFor: future(12) },
@@ -269,14 +274,14 @@ try {
   } catch {
     check(
       "a batch containing a past date is fully rejected",
-      st.getVariant(USER_ID, av.id).scheduledFor === beforeA &&
-        st.getVariant(USER_ID, bv.id).scheduledFor === beforeB,
+      (await st.getVariant(USER_ID, av.id)).scheduledFor === beforeA &&
+        (await st.getVariant(USER_ID, bv.id)).scheduledFor === beforeB,
     );
   }
 
   // Rollback: the scheduler itself fails partway through a batch.
-  const preA = st.getVariant(USER_ID, av.id).scheduledFor;
-  const preB = st.getVariant(USER_ID, bv.id).scheduledFor;
+  const preA = (await st.getVariant(USER_ID, av.id)).scheduledFor;
+  const preB = (await st.getVariant(USER_ID, bv.id)).scheduledFor;
   sched.failNext(1);
   try {
     await st.rescheduleVariants(USER_ID, [
@@ -287,8 +292,8 @@ try {
   } catch {
     check(
       "a scheduler failure rolls the whole batch back",
-      st.getVariant(USER_ID, av.id).scheduledFor === preA &&
-        st.getVariant(USER_ID, bv.id).scheduledFor === preB,
+      (await st.getVariant(USER_ID, av.id)).scheduledFor === preA &&
+        (await st.getVariant(USER_ID, bv.id)).scheduledFor === preB,
     );
   }
 
@@ -308,15 +313,15 @@ try {
   check(
     "cancelling drops the timer",
     sched.pending().length === timersBefore - 1 &&
-      st.getVariant(USER_ID, av.id).scheduleId === null,
+      (await st.getVariant(USER_ID, av.id)).scheduleId === null,
   );
 }
 
 // -- connections and channels ------------------------------------------------
 
 {
-  const st = createSeededStore();
-  const accounts = st.getConnectedAccounts(USER_ID);
+  const st = await createStore();
+  const accounts = await st.getConnectedAccounts(USER_ID);
   check("both Meta channels are listed", accounts.length === 2);
   check(
     "channel summaries leak no token, tokenRef, or platform id",
@@ -335,8 +340,8 @@ try {
 
   // A personal Instagram account cannot be published to through Meta's API.
   const personal = createStoreWithPersonalInstagram();
-  const [pi] = personal.createContent(USER_ID, [item()]);
-  personal.humanApprove(USER_ID, pi!.variants[0]!.id);
+  const [pi] = await personal.createContent(USER_ID, [item()]);
+  await personal.humanApprove(USER_ID, pi!.variants[0]!.id);
   try {
     await personal.scheduleVariant(USER_ID, pi!.variants[0]!.id, future(), "key-personal");
     check("a PERSONAL Instagram account cannot be scheduled to", false, "it succeeded!");
@@ -349,7 +354,7 @@ try {
   }
 
   try {
-    st.createContent(USER_ID, [item({ variants: [variant({ channelId: "ch_nope" })] })]);
+    await st.createContent(USER_ID, [item({ variants: [variant({ channelId: "ch_nope" })] })]);
     check("an unknown channelId is rejected", false, "it succeeded!");
   } catch (e) {
     check("an unknown channelId is rejected", e instanceof StoreError);
@@ -357,7 +362,7 @@ try {
 
   // Facebook's hashtag limit is ours, not Meta's — but it is still enforced.
   try {
-    st.createContent(USER_ID, [
+    await st.createContent(USER_ID, [
       item({
         variants: [variant({ channelId: FB, hashtags: ["a", "b", "c", "d", "e"] })],
       }),
@@ -371,9 +376,9 @@ try {
 // -- formats -----------------------------------------------------------------
 
 {
-  const st = createSeededStore();
+  const st = await createStore();
 
-  const [reel] = st.createContent(USER_ID, [
+  const [reel] = await st.createContent(USER_ID, [
     item({
       variants: [
         variant({
@@ -433,9 +438,9 @@ try {
 // -- campaigns and two-phase planning ---------------------------------------
 
 {
-  const st = createSeededStore();
+  const st = await createStore();
 
-  const campaign = st.createCampaign(USER_ID, {
+  const campaign = await st.createCampaign(USER_ID, {
     name: "Cold brew season",
     goal: "Sell 200 cold brews in two weeks",
     keyMessage: "Eighteen hours steeped, no dilution.",
@@ -444,7 +449,7 @@ try {
   });
   check("a campaign can be created", campaign.id.startsWith("camp_"));
 
-  const slots = st.planSlots(USER_ID, [
+  const slots = await st.planSlots(USER_ID, [
     {
       topic: "Tease",
       coreMessage: "Something is steeping.",
@@ -472,32 +477,32 @@ try {
   check("slots carry their campaign", slots.every((s) => s.campaignId === campaign.id));
   check(
     "campaign item count reflects the slots",
-    st.listCampaigns(USER_ID).find((c) => c.id === campaign.id)?.itemCount === 2,
+    (await st.listCampaigns(USER_ID)).find((c) => c.id === campaign.id)?.itemCount === 2,
   );
 
   // An unwritten slot must still be visible, or phase two plans it twice.
-  const planned = st.getCalendar(USER_ID, { from: "2126-10-01", to: "2126-10-31" });
+  const planned = await st.getCalendar(USER_ID, { from: "2126-10-01", to: "2126-10-31" });
   check("unwritten slots appear on the calendar", planned.length === 2);
   check("unwritten slots have no variants yet", planned.every((i) => i.variants.length === 0));
 
   // Phase two fills the copy.
   const launch = slots.find((s) => s.topic === "Launch")!;
-  const written = st.addVariants(USER_ID, launch.id, [
+  const written = await st.addVariants(USER_ID, launch.id, [
     variant({ channelId: IG, scheduledFor: "2126-10-03T09:00:00+05:30" }),
     variant({ channelId: FB, scheduledFor: "2126-10-03T09:00:00+05:30", hashtags: [] }),
   ]);
   check("write_slot_copy fills a planned slot", written.length === 2);
   check(
     "the filled slot now shows its variants",
-    st.getItem(USER_ID, launch.id).variants.length === 2,
+    (await st.getItem(USER_ID, launch.id)).variants.length === 2,
   );
 
-  const items = st.getCampaignItems(USER_ID, campaign.id);
+  const items = await st.getCampaignItems(USER_ID, campaign.id);
   check("campaign items come back in planned order", items[0]!.topic === "Tease");
 
   // A slot whose format the channel cannot do must be refused up front.
   try {
-    st.planSlots(USER_ID, [
+    await st.planSlots(USER_ID, [
       {
         topic: "Bad",
         coreMessage: "x",
@@ -523,15 +528,15 @@ try {
   /** A store with one APPROVED variant scheduled in the past, ready to publish. */
   const readyToPublish = async (channelId = IG) => {
     const sched = new MockScheduler();
-    const st = createSeededStore(sched);
-    const [i] = st.createContent(USER_ID, [
+    const st = await createStore(sched);
+    const [i] = await st.createContent(USER_ID, [
       item({ variants: [variant({ channelId, hashtags: [] })] }),
     ]);
     const v = i!.variants[0]!;
-    st.humanApprove(USER_ID, v.id);
+    await st.humanApprove(USER_ID, v.id);
     await st.scheduleVariant(USER_ID, v.id, future(1), `pubkey-${v.id}`);
     // Drag it into the past so the sweep picks it up.
-    st.rescheduleForTest(v.id, past());
+    await st.rescheduleForTest(v.id, past());
     return { st, variantId: v.id };
   };
 
@@ -543,7 +548,7 @@ try {
     const [outcome] = await pub.publishDue(USER_ID);
 
     check("a due variant publishes", outcome?.status === "PUBLISHED", JSON.stringify(outcome));
-    const v = st.getVariant(USER_ID, variantId);
+    const v = await st.getVariant(USER_ID, variantId);
     check("PUBLISHED is finally a reachable state", v.status === "PUBLISHED");
     check("the platform post id is recorded", !!v.platformPostId);
     check("publishedAt is set", !!v.publishedAt);
@@ -555,12 +560,12 @@ try {
     const connector = new MockMetaConnector();
     const pub = new Publisher(st, new MockTokenProvider(), [connector]);
     await pub.publishDue(USER_ID);
-    const first = st.getVariant(USER_ID, variantId).platformPostId;
+    const first = (await st.getVariant(USER_ID, variantId)).platformPostId;
     const second = await pub.publishOne(USER_ID, variantId);
     check(
       "re-publishing is a no-op, not a second post",
       second.status === "PUBLISHED" &&
-        st.getVariant(USER_ID, variantId).platformPostId === first,
+        (await st.getVariant(USER_ID, variantId)).platformPostId === first,
     );
   }
 
@@ -573,7 +578,7 @@ try {
     const [outcome] = await pub.publishDue(USER_ID);
 
     check("an AUTH failure marks the variant FAILED", outcome?.status === "FAILED");
-    const accounts = st.getConnectedAccounts(USER_ID);
+    const accounts = await st.getConnectedAccounts(USER_ID);
     check(
       "an AUTH failure takes BOTH Meta channels down together",
       accounts.length === 2 && accounts.every((a) => a.connectionStatus === "REAUTH_REQUIRED"),
@@ -592,7 +597,7 @@ try {
     check("a TRANSIENT failure asks for a retry", first?.status === "RETRY");
     check(
       "a retryable failure leaves the variant SCHEDULED",
-      st.getVariant(USER_ID, variantId).status === "SCHEDULED",
+      (await st.getVariant(USER_ID, variantId)).status === "SCHEDULED",
     );
 
     const [second] = await pub.publishDue(USER_ID);
@@ -608,7 +613,7 @@ try {
     await pub.publishDue(USER_ID);
     check(
       "a RATE_LIMIT failure is retryable, not fatal",
-      st.getVariant(USER_ID, variantId).status === "SCHEDULED",
+      (await st.getVariant(USER_ID, variantId)).status === "SCHEDULED",
     );
   }
 
@@ -619,7 +624,7 @@ try {
     connector.failNext("PERMANENT");
     const pub = new Publisher(st, new MockTokenProvider(), [connector]);
     await pub.publishDue(USER_ID);
-    const v = st.getVariant(USER_ID, variantId);
+    const v = await st.getVariant(USER_ID, variantId);
     check("a PERMANENT failure marks the variant FAILED", v.status === "FAILED");
     check("the failure reason is recorded", !!v.failureReason);
   }
@@ -627,25 +632,25 @@ try {
   // Nothing that a human has not approved can ever reach the connector.
   {
     const sched = new MockScheduler();
-    const st = createSeededStore(sched);
-    const [i] = st.createContent(USER_ID, [item()]);
+    const st = await createStore(sched);
+    const [i] = await st.createContent(USER_ID, [item()]);
     const v = i!.variants[0]!;
-    st.requestApproval(USER_ID, v.id);
-    st.rescheduleForTest(v.id, past());
+    await st.requestApproval(USER_ID, v.id);
+    await st.rescheduleForTest(v.id, past());
 
     const connector = new MockMetaConnector();
     const pub = new Publisher(st, new MockTokenProvider(), [connector]);
     const outcome = await pub.publishOne(USER_ID, v.id);
     check(
       "an unapproved variant is never published",
-      outcome.status === "FAILED" && st.getVariant(USER_ID, v.id).status !== "PUBLISHED",
+      outcome.status === "FAILED" && (await st.getVariant(USER_ID, v.id)).status !== "PUBLISHED",
     );
   }
 
   // The sweep must only pick up things whose moment has arrived.
   {
     const { st } = await readyToPublish();
-    const future2 = st.getDueVariants(new Date(Date.now() - 3600_000));
+    const future2 = await st.getDueVariants(new Date(Date.now() - 3600_000));
     check("the sweep ignores variants that are not due yet", future2.length === 0);
   }
 }
@@ -654,7 +659,7 @@ try {
 
 {
   const media = createMediaStore();
-  const st = createSeededStore(new MockScheduler(), media);
+  const st = await createStore(new MockScheduler(), media);
 
   // Search is text-only. This is the whole cost strategy: a photo is ~1,500
   // tokens, so a fifty-asset library handed over on every turn would be ~75,000
@@ -697,7 +702,7 @@ try {
 
   // Validation: the store refuses an asset that cannot be that format.
   try {
-    st.createContent(USER_ID, [
+    await st.createContent(USER_ID, [
       item({
         variants: [
           variant({
@@ -719,7 +724,7 @@ try {
   }
 
   try {
-    st.createContent(USER_ID, [
+    await st.createContent(USER_ID, [
       item({ variants: [variant({ assetIds: ["asset_pour01", "asset_roaster01"] })] }),
     ]);
     check("a POST refuses two assets", false, "it succeeded!");
@@ -728,14 +733,14 @@ try {
   }
 
   try {
-    st.createContent(USER_ID, [item({ variants: [variant({ assetIds: ["asset_nope"] })] })]);
+    await st.createContent(USER_ID, [item({ variants: [variant({ assetIds: ["asset_nope"] })] })]);
     check("an unknown assetId is refused", false, "it succeeded!");
   } catch (e) {
     check("an unknown assetId is refused", e instanceof MediaError);
   }
 
   // The happy path, and the usage marker that powers unusedOnly.
-  const [ok1] = st.createContent(USER_ID, [
+  const [ok1] = await st.createContent(USER_ID, [
     item({ variants: [variant({ assetIds: ["asset_pour01"] })] }),
   ]);
   check("a square photo is accepted as a POST", ok1!.variants[0]!.assetIds.length === 1);
@@ -745,7 +750,7 @@ try {
   );
 
   // Planning without assets must still work — a month ahead there are no photos.
-  const [brief] = st.createContent(USER_ID, [item({ variants: [variant({ assetIds: [] })] })]);
+  const [brief] = await st.createContent(USER_ID, [item({ variants: [variant({ assetIds: [] })] })]);
   check("content can still be planned with no assets", brief!.variants[0]!.assetIds.length === 0);
 }
 

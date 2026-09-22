@@ -140,7 +140,7 @@ async function main() {
         continue;
       }
 
-      handleCommand(input, store, media, sessionCost);
+      await handleCommand(input, store, media, sessionCost);
       continue;
     }
 
@@ -263,7 +263,7 @@ async function handleUpload(
     }
 
     process.stdout.write(dim("  looking at the image..."));
-    const profile = store.getBusinessProfile(USER_ID);
+    const profile = await store.getBusinessProfile(USER_ID);
     const described = await describeImage(data, mimeType, {
       businessName: profile.businessName,
       industry: profile.industry,
@@ -336,7 +336,7 @@ function explainError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function handleCommand(
+async function handleCommand(
   input: string,
   store: ReturnType<typeof createSeededStore>,
   media: MediaStore,
@@ -350,7 +350,7 @@ function handleCommand(
     // idea into two items.
     case "/posts":
     case "/calendar": {
-      const items = store.getCalendar(USER_ID);
+      const items = await store.getCalendar(USER_ID);
       if (items.length === 0) {
         console.log(dim("\n  nothing planned yet\n"));
         return;
@@ -402,7 +402,7 @@ function handleCommand(
     case "/show": {
       if (!arg) return console.log(red("\n  usage: /show <itemId>\n"));
       try {
-        renderItem(store.getItem(USER_ID, arg), media);
+        await renderItem(await store.getItem(USER_ID, arg), media);
       } catch (e) {
         console.log(red(`\n  ${(e as Error).message}\n`));
       }
@@ -418,7 +418,7 @@ function handleCommand(
         //
         // It approves ONE variant: the Instagram wording and the Facebook
         // wording are different text, so they are approved separately.
-        const v = store.humanApprove(USER_ID, arg);
+        const v = await store.humanApprove(USER_ID, arg);
         console.log(
           green(`\n  ${v.id} (${v.platform}) approved — the agent can now schedule it\n`),
         );
@@ -438,7 +438,7 @@ function handleCommand(
 }
 
 /** The idea first, then each channel's version of it. */
-function renderItem(item: ContentItemWithVariants, media: MediaStore) {
+async function renderItem(item: ContentItemWithVariants, media: MediaStore) {
   console.log(`\n  ${bold(item.topic)}  ${dim(item.id)}`);
   console.log(dim(`  ${item.contentCategory} · ${item.pillar}`));
   console.log(`\n  ${item.coreMessage}`);

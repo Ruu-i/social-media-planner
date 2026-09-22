@@ -1,10 +1,10 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type { BetaMessage, BetaMessageParam } from "@anthropic-ai/sdk/resources/beta";
 
 import { SYSTEM_PROMPT } from "./system.js";
 import { createTools, type Session, type ToolDeps } from "./tools.js";
 import { buildTimeContext } from "./time-context.js";
-import type { MemoryStore } from "../store/memory.js";
+import { createClient, resolveModel } from "./provider.js";
+import type { ContentStore } from "../store/types.js";
 
 /**
  * The agent loop.
@@ -15,12 +15,13 @@ import type { MemoryStore } from "../store/memory.js";
  * only has to own the things the runner does not: conversation state across
  * turns, pause_turn resumption, and reporting.
  *
- * Provider seam: swapping this one construction for AnthropicBedrockMantle
- * moves the whole agent to Bedrock. Everything below is identical either way.
+ * Provider seam: see provider.ts. The client and model id are resolved from
+ * LLM_PROVIDER, so moving the whole agent to Bedrock is an env var — the loop
+ * below is identical either way.
  */
-const client = new Anthropic();
+const client = createClient();
 
-export const MODEL = "claude-opus-5";
+export const MODEL = resolveModel();
 
 /**
  * `high` for quality, `medium` for roughly 23% less waiting. Measured, not
@@ -68,7 +69,7 @@ export class ContentAgent {
   private messages: BetaMessageParam[] = [];
 
   constructor(
-    private store: MemoryStore,
+    private store: ContentStore,
     private session: Session,
     private deps: ToolDeps = {},
   ) {}
@@ -82,7 +83,7 @@ export class ContentAgent {
     // in the system prompt — a timestamp in the cached prefix would invalidate
     // the cache on every request. Here it sits after the breakpoint, so the
     // cache still hits.
-    const timezone = this.store.getBusinessProfile(this.session.userId).timezone;
+    const timezone = (await this.store.getBusinessProfile(this.session.userId)).timezone;
     this.messages.push({
       role: "user",
       content: `${buildTimeContext(timezone)}

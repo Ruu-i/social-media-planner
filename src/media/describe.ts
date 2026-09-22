@@ -1,6 +1,7 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
+
+import { createClient, resolveProvider } from "../agent/provider.js";
 
 /**
  * The vision pass.
@@ -14,7 +15,10 @@ import { z } from "zod";
  * and this runs once per file rather than once per plan.
  */
 
-const DESCRIBE_MODEL = "claude-haiku-4-5";
+// Haiku, not Opus: describing a photo is not a reasoning task, and this runs
+// once per uploaded file rather than once per plan.
+const DESCRIBE_MODEL =
+  resolveProvider() === "bedrock" ? "anthropic.claude-haiku-4-5" : "claude-haiku-4-5";
 
 const DescriptionSchema = z.object({
   description: z
@@ -43,7 +47,7 @@ const DescriptionSchema = z.object({
 
 export type AssetDescription = z.infer<typeof DescriptionSchema>;
 
-const client = new Anthropic();
+const client = createClient();
 
 /** Media types the vision API accepts. */
 const SUPPORTED = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
