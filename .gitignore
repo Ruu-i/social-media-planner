@@ -17,3 +17,6 @@ out/
 web/dist/
 
 .ddb-local/
+
+# Lambda build output — regenerate with npm run build:lambda
+dist-lambda/
