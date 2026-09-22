@@ -14,7 +14,8 @@
     "bedrock:check": "tsx src/bedrock-check.ts",
     "verify:dynamo": "node scripts/verify-dynamo.mjs",
     "verify:both": "npm run verify && npm run verify:dynamo",
-    "ddb:start": "node scripts/ddb-start.mjs"
+    "ddb:start": "node scripts/ddb-start.mjs",
+    "build:lambda": "node scripts/build-lambda.mjs"
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "^0.33.7",
@@ -30,6 +31,7 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^22.10.0",
+    "esbuild": "^0.28.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }
