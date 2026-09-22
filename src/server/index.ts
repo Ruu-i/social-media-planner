@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 
-import { createSession, getAgent, media, publisher, store, storage, USER_ID } from "./sessions.js";
+import { agentFor, createSession, media, publisher, store, storage, USER_ID } from "./sessions.js";
 import { describeImage, canDescribe } from "../media/describe.js";
 import { suitableFormats } from "../media/types.js";
 import { readVideoInfo, videoMimeFor } from "../media/video.js";
@@ -67,8 +67,9 @@ app.post("/api/sessions", async (_req, res) => {
  * SSE is GET-only, so the message rides in a query parameter rather than a body.
  */
 app.get("/api/sessions/:id/stream", async (req, res) => {
-  const agent = getAgent(req.params.id);
-  if (!agent) return res.status(404).json({ error: "NOT_FOUND", message: "No such session" });
+  // An agent is cheap to build and holds no state — history comes from the
+  // conversation store. So there is nothing to look up and nothing to expire.
+  const agent = agentFor(req.params.id);
 
   const message = String(req.query.q ?? "").trim();
   if (!message) return res.status(400).json({ error: "INVALID_INPUT", message: "q is required" });

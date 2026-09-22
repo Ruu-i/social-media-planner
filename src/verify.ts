@@ -7,6 +7,13 @@ import {
   USER_ID,
 } from "./seed.js";
 import { MockScheduler } from "./scheduler/mock.js";
+import {
+  DynamoConversationStore,
+  MemoryConversationStore,
+  type ConversationStore,
+} from "./store/conversations.js";
+import { createDynamoClient } from "./store/dynamo-table.js";
+import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta";
 import { MockMetaConnector, MockTokenProvider } from "./connectors/mock.js";
 import { Publisher } from "./publisher.js";
 import { StoreError } from "./store/memory.js";
@@ -754,5 +761,83 @@ try {
   check("content can still be planned with no assets", brief!.variants[0]!.assetIds.length === 0);
 }
 
-console.log(`\n  ${pass} passed, ${fail} failed\n`);
+// -- conversation persistence ------------------------------------------------
+//
+// Lambda holds no state between invocations, so history has to survive being
+// read back by something that never saw it written. Every assertion here is
+// about that one property.
+
+{
+  const stores: Array<[string, ConversationStore]> = [
+    ["memory", new MemoryConversationStore()],
+  ];
+  if (STORE_KIND === "dynamo") {
+    stores.push(["dynamo", new DynamoConversationStore(createDynamoClient())]);
+  }
+
+  for (const [label, conv] of stores) {
+    check(`${label}: an unknown session loads as empty`, (await conv.load("s1")).length === 0);
+
+    const turn: BetaMessageParam[] = [
+      { role: "user", content: "plan next week" },
+      { role: "assistant", content: "done" },
+    ];
+    await conv.save("s1", turn);
+
+    const reloaded = await conv.load("s1");
+    check(
+      `${label}: a turn survives the round trip`,
+      reloaded.length === 2 && (reloaded[0] as { content: string }).content === "plan next week",
+    );
+
+    await conv.save("s1", [...turn, { role: "user", content: "make it funnier" }]);
+    check(
+      `${label}: saving again appends rather than duplicating`,
+      (await conv.load("s1")).length === 3,
+    );
+
+    check(`${label}: sessions are isolated`, (await conv.load("s2")).length === 0);
+
+    // Zero-padded keys are what make DynamoDB's lexical order chronological.
+    // Without them "MSG#10" sorts before "MSG#2" and the history scrambles.
+    const many: BetaMessageParam[] = Array.from({ length: 12 }, (_, i) => ({
+      role: "user",
+      content: `m${i}`,
+    }));
+    await conv.save("s3", many);
+    const back = await conv.load("s3");
+    check(
+      `${label}: order holds past the tenth message`,
+      back.length === 12 && (back[10] as { content: string }).content === "m10",
+      `got ${(back[10] as { content: string } | undefined)?.content}`,
+    );
+  }
+
+  // A base64 photo is roughly 1.5MB — on its own nearly four times DynamoDB's
+  // 400KB item limit. It must never reach the table.
+  if (STORE_KIND === "dynamo") {
+    const conv = new DynamoConversationStore(createDynamoClient());
+    await conv.save("s-img", [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "look at this" },
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/jpeg", data: "A".repeat(1_500_000) },
+          },
+        ],
+      },
+    ]);
+    const first = (await conv.load("s-img"))[0] as {
+      content: Array<{ type: string; text?: string }>;
+    };
+    check(
+      "a base64 image is stripped before persisting",
+      first.content[1]!.type === "text" && first.content[1]!.text!.includes("image omitted"),
+    );
+  }
+}
+
+console.log(`\n  ${pass} passed, ${fail} failed  (store: ${STORE_KIND})\n`);
 process.exit(fail > 0 ? 1 : 0);

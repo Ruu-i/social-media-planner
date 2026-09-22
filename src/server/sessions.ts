@@ -5,41 +5,64 @@ import { createMediaStore, createSeededStore, USER_ID } from "../seed.js";
 import { LocalMediaStorage } from "../media/storage.js";
 import { Publisher } from "../publisher.js";
 import { MockMetaConnector, MockTokenProvider } from "../connectors/mock.js";
-import type { MemoryStore } from "../store/memory.js";
+import {
+  DynamoConversationStore,
+  MemoryConversationStore,
+  type ConversationStore,
+} from "../store/conversations.js";
+import { createDynamoClient } from "../store/dynamo-table.js";
+import type { ContentStore } from "../store/types.js";
 import type { MediaStore } from "../store/media.js";
 
 /**
- * Process-wide state for the dev server.
+ * Process-wide wiring for the server.
  *
- * The store, media library and publisher are shared across sessions because
- * they stand in for a database — two browser tabs should see the same calendar.
- * Only the CONVERSATION is per-session, because that is the only thing that is
- * genuinely per-user-per-chat.
+ * The content store, media library and publisher are shared across sessions
+ * because they stand in for a database — two browser tabs should see the same
+ * calendar. Only the CONVERSATION is per-session, because that is the only
+ * thing genuinely per-user-per-chat.
  *
- * Known limitation, deliberately not solved: conversations live in this
- * process's memory, so they die on restart and would not survive a second
- * instance. Fixing that properly means persisting the message history to the
- * database — worth doing before deploying, pointless for a dev server.
+ * Conversations now live in a ConversationStore rather than a Map of agents.
+ * That is what makes the move to Lambda possible: history is rehydrated per
+ * request instead of depending on a process that survives between them.
  */
 
 const media: MediaStore = createMediaStore();
 const storage = new LocalMediaStorage();
-const store: MemoryStore = createSeededStore(undefined, media);
+const store: ContentStore = createSeededStore(undefined, media);
 
 const publisher = new Publisher(store, new MockTokenProvider(), [
   new MockMetaConnector(() => {}),
 ]);
 
-const agents = new Map<string, ContentAgent>();
+/**
+ * In Lambda this must be DynamoDB — there is no process to hold a Map. Locally
+ * the Map is exactly right, and avoids needing DynamoDB Local just to chat.
+ */
+const conversations: ConversationStore =
+  process.env.STORE === "dynamo"
+    ? new DynamoConversationStore(createDynamoClient())
+    : new MemoryConversationStore();
 
+/**
+ * Sessions are now just ids.
+ *
+ * Previously this held a live ContentAgent per session. It does not any more:
+ * an agent is cheap to construct and holds no state, so building one per
+ * request is both simpler and the only thing that works when requests land on
+ * different containers.
+ */
 export function createSession(): string {
-  const id = randomUUID();
-  agents.set(id, new ContentAgent(store, { userId: USER_ID }, { storage }));
-  return id;
+  return randomUUID();
 }
 
-export function getAgent(sessionId: string): ContentAgent | null {
-  return agents.get(sessionId) ?? null;
+export function agentFor(sessionId: string): ContentAgent {
+  return new ContentAgent(
+    store,
+    { userId: USER_ID, sessionId },
+    { storage },
+    conversations,
+  );
 }
 
-export { store, media, storage, publisher, USER_ID };
+export { store, media, storage, publisher, conversations, USER_ID };

@@ -4,6 +4,10 @@ import { SYSTEM_PROMPT } from "./system.js";
 import { createTools, type Session, type ToolDeps } from "./tools.js";
 import { buildTimeContext } from "./time-context.js";
 import { createClient, resolveModel } from "./provider.js";
+import {
+  MemoryConversationStore,
+  type ConversationStore,
+} from "../store/conversations.js";
 import type { ContentStore } from "../store/types.js";
 
 /**
@@ -58,33 +62,45 @@ export interface AgentEvents {
 }
 
 /**
- * Holds the conversation across turns.
+ * Drives one conversation.
  *
  * The agent is multi-turn over persistent state: "make Wednesday funnier" only
- * means something because the previous turn created Wednesday. We keep the full
- * message history — including tool calls and their results — and hand it back
- * to each new runner, so the model can see what it already did.
+ * means something because the previous turn created Wednesday. The full message
+ * history — tool calls and their results included — is handed back to each new
+ * runner so the model can see what it already did.
+ *
+ * History is loaded and saved per turn rather than held in the instance,
+ * because in Lambda there is no instance that survives between requests. The
+ * default store is in-memory, which is exactly right for the CLI.
  */
 export class ContentAgent {
-  private messages: BetaMessageParam[] = [];
-
   constructor(
     private store: ContentStore,
     private session: Session,
     private deps: ToolDeps = {},
+    private conversations: ConversationStore = new MemoryConversationStore(),
   ) {}
 
-  get history(): readonly BetaMessageParam[] {
-    return this.messages;
+  /** The session key history is stored under. */
+  private get conversationId(): string {
+    return this.session.sessionId ?? this.session.userId;
+  }
+
+  async history(): Promise<readonly BetaMessageParam[]> {
+    return this.conversations.load(this.conversationId);
   }
 
   async send(userMessage: string, events: AgentEvents = {}): Promise<TurnResult> {
+    // Rehydrate the conversation. In Lambda this is the only way the previous
+    // turn is still available; locally it is a Map lookup.
+    const messages = await this.conversations.load(this.conversationId);
+
     // The current date and timezone rules ride along with the user turn, not
     // in the system prompt — a timestamp in the cached prefix would invalidate
     // the cache on every request. Here it sits after the breakpoint, so the
     // cache still hits.
     const timezone = (await this.store.getBusinessProfile(this.session.userId)).timezone;
-    this.messages.push({
+    messages.push({
       role: "user",
       content: `${buildTimeContext(timezone)}
 
@@ -117,7 +133,7 @@ ${userMessage}`,
         { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
       ],
 
-      messages: this.messages,
+      messages,
       tools: createTools(this.store, this.session, this.deps),
 
       // Stream so the caller can show progress. The tokens flow either way;
@@ -182,7 +198,7 @@ ${userMessage}`,
 
     // Persist the full exchange — assistant turns and tool results included —
     // so the next turn sees everything this one did.
-    this.messages = [...runner.params.messages];
+    await this.conversations.save(this.conversationId, [...runner.params.messages]);
 
     return { text: extractText(final), toolCalls, usage };
   }

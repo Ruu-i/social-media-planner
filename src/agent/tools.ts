@@ -40,6 +40,8 @@ import { canDescribe } from "../media/describe.js";
 
 export interface Session {
   userId: string;
+  /** Which conversation this is. Falls back to userId for single-session use. */
+  sessionId?: string;
 }
 
 /** Optional: lets get_media_asset return the actual image for a close look. */
