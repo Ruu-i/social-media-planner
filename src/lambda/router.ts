@@ -9,6 +9,7 @@ import {
   USER_ID,
 } from "../server/sessions.js";
 import { describeImage, canDescribe } from "../media/describe.js";
+import { ensureApiKey } from "../agent/provider.js";
 import { suitableFormats } from "../media/types.js";
 import { StoreError } from "../store/memory.js";
 import { MediaError } from "../store/media.js";
@@ -203,6 +204,9 @@ async function uploadMedia(body: Record<string, unknown>): Promise<RouteResult> 
       message: `${mimeType} cannot be described. Use jpg, png, gif or webp.`,
     });
   }
+
+  // The vision pass needs the key too.
+  await ensureApiKey();
 
   const data = Buffer.from(dataBase64, "base64");
   const profile = await store.getBusinessProfile(USER_ID);

@@ -23,7 +23,9 @@ import type { ContentStore } from "../store/types.js";
  * LLM_PROVIDER, so moving the whole agent to Bedrock is an env var — the loop
  * below is identical either way.
  */
-const client = createClient();
+// Constructed on first use, not at import: the API key may still be
+// arriving from SSM when this module is loaded.
+const client = () => createClient();
 
 export const MODEL = resolveModel();
 
@@ -107,7 +109,7 @@ export class ContentAgent {
 ${userMessage}`,
     });
 
-    const runner = client.beta.messages.toolRunner({
+    const runner = client().beta.messages.toolRunner({
       model: MODEL,
       max_tokens: 16000,
 

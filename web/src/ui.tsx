@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Status, Platform, MediaAsset } from "./api";
+import { apiUrl, type Status, type Platform, type MediaAsset } from "./api";
 
 /**
  * Shared visual vocabulary.
@@ -100,7 +100,7 @@ export function Thumb({
 
   return (
     <img
-      src={`/api/media/${asset.assetId}/file`}
+      src={apiUrl(`/api/media/${asset.assetId}/file`)}
       alt={asset.description}
       onError={() => setFailed(true)}
       style={size ? { width: size, height: size } : undefined}

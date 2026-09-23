@@ -91,6 +91,24 @@ export interface PublishOutcome {
   detail: string;
 }
 
+/**
+ * Where the API lives.
+ *
+ * In development this is empty, so paths stay relative and Vite's proxy
+ * forwards them — one origin, no CORS.
+ *
+ * In production the UI is on CloudFront and the API is on a Lambda Function
+ * URL, which are DIFFERENT ORIGINS. That separation is deliberate: CloudFront
+ * buffers streaming responses, which would destroy the live progress the agent
+ * turn depends on. So the built bundle needs the API's absolute address baked
+ * in at build time.
+ *
+ *   VITE_API_BASE=https://xxxx.lambda-url.us-east-1.on.aws npm run build
+ */
+const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
+
+export const apiUrl = (path: string) => `${API_BASE}${path}`;
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { message?: string };
@@ -101,30 +119,30 @@ async function json<T>(res: Response): Promise<T> {
 
 export const api = {
   createSession: () =>
-    fetch("/api/sessions", { method: "POST" }).then(json<{ sessionId: string }>),
+    fetch(apiUrl("/api/sessions"), { method: "POST" }).then(json<{ sessionId: string }>),
 
-  calendar: () => fetch("/api/calendar").then(json<{ items: ContentItem[] }>),
+  calendar: () => fetch(apiUrl("/api/calendar")).then(json<{ items: ContentItem[] }>),
 
-  accounts: () => fetch("/api/accounts").then(json<{ accounts: Account[] }>),
+  accounts: () => fetch(apiUrl("/api/accounts")).then(json<{ accounts: Account[] }>),
 
-  media: () => fetch("/api/media").then(json<{ assets: MediaAsset[] }>),
+  media: () => fetch(apiUrl("/api/media")).then(json<{ assets: MediaAsset[] }>),
 
   /** The human gate. Goes straight to the backend — never through the agent. */
   approve: (variantId: string) =>
-    fetch(`/api/variants/${variantId}/approve`, { method: "POST" }).then(
+    fetch(apiUrl(`/api/variants/${variantId}/approve`), { method: "POST" }).then(
       json<{ variant: Variant }>,
     ),
 
   cancel: (variantId: string) =>
-    fetch(`/api/variants/${variantId}/cancel`, { method: "POST" }).then(
+    fetch(apiUrl(`/api/variants/${variantId}/cancel`), { method: "POST" }).then(
       json<{ variant: Variant }>,
     ),
 
   publishDue: () =>
-    fetch("/api/publish/run", { method: "POST" }).then(json<{ outcomes: PublishOutcome[] }>),
+    fetch(apiUrl("/api/publish/run"), { method: "POST" }).then(json<{ outcomes: PublishOutcome[] }>),
 
   upload: (filename: string, dataBase64: string) =>
-    fetch("/api/media", {
+    fetch(apiUrl("/api/media"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename, dataBase64 }),

@@ -20,3 +20,14 @@ web/dist/
 
 # Lambda build output — regenerate with npm run build:lambda
 dist-lambda/
+
+# Terraform: local state and the provider cache.
+# State describes the live stack and can hold resource values in plaintext;
+# the .terraform dir is hundreds of MB of downloaded providers.
+infra/.terraform/
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/*.tfvars
+
+# TypeScript incremental build info
+*.tsbuildinfo

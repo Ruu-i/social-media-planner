@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { AnthropicBedrockMantle } from "@anthropic-ai/bedrock-sdk";
+import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 
 /**
  * The provider seam.
@@ -49,19 +50,67 @@ export function resolveModel(provider = resolveProvider()): string {
 }
 
 /**
- * Build the client.
+ * Fetch the API key from SSM Parameter Store, once per container.
+ *
+ * In Lambda there is no .env file and the key must not be a plaintext
+ * environment variable — anyone with console read access would see it. The
+ * function's role grants ssm:GetParameter on exactly one path, and the value is
+ * decrypted here at cold start.
+ *
+ * A no-op when ANTHROPIC_API_KEY is already set (local development) or when
+ * running on Bedrock, where IAM replaces the key entirely.
+ */
+let keyPromise: Promise<void> | null = null;
+
+export function ensureApiKey(): Promise<void> {
+  keyPromise ??= (async () => {
+    if (process.env.ANTHROPIC_API_KEY) return;
+    if (resolveProvider() === "bedrock") return;
+
+    const name = process.env.API_KEY_PARAMETER;
+    if (!name) return;
+
+    const ssm = new SSMClient({ region: process.env.AWS_REGION ?? "us-east-1" });
+    const result = await ssm.send(
+      new GetParameterCommand({ Name: name, WithDecryption: true }),
+    );
+    const value = result.Parameter?.Value;
+    if (!value) {
+      throw new Error(
+        `SSM parameter ${name} is empty. Put the key there with:
+` +
+          `  aws ssm put-parameter --name ${name} --type SecureString --value sk-ant-...`,
+      );
+    }
+    process.env.ANTHROPIC_API_KEY = value;
+  })();
+
+  return keyPromise;
+}
+
+/**
+ * Build the client, LAZILY.
+ *
+ * Lazy matters: the key arrives from SSM asynchronously at cold start, and a
+ * client constructed at module-import time would capture an empty key before
+ * the fetch ever ran. Deferring construction to first use means it picks up
+ * whatever ensureApiKey resolved.
  *
  * Bedrock credentials come from the standard AWS chain — environment
- * variables, `~/.aws/credentials`, or, in a Lambda, the execution role. Nothing
- * needs to be passed explicitly in any of those cases.
+ * variables, ~/.aws/credentials, or in a Lambda the execution role.
  */
+let cached: { provider: Provider; client: Anthropic | AnthropicBedrockMantle } | null = null;
+
 export function createClient(provider = resolveProvider()) {
-  if (provider === "bedrock") {
-    return new AnthropicBedrockMantle({
-      awsRegion: process.env.AWS_REGION ?? "us-east-1",
-    });
-  }
-  return new Anthropic();
+  if (cached?.provider === provider) return cached.client;
+
+  const client =
+    provider === "bedrock"
+      ? new AnthropicBedrockMantle({ awsRegion: process.env.AWS_REGION ?? "us-east-1" })
+      : new Anthropic();
+
+  cached = { provider, client };
+  return client;
 }
 
 /** A human-readable description of where inference is going, for logs and UI. */

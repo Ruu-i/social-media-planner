@@ -47,7 +47,9 @@ const DescriptionSchema = z.object({
 
 export type AssetDescription = z.infer<typeof DescriptionSchema>;
 
-const client = createClient();
+// Constructed on first use, not at import: the API key may still be
+// arriving from SSM when this module is loaded.
+const client = () => createClient();
 
 /** Media types the vision API accepts. */
 const SUPPORTED = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
@@ -81,7 +83,7 @@ export async function describeImage(
       (context.industry ? ` (${context.industry}).` : ".")
     : "";
 
-  const response = await client.messages.parse({
+  const response = await client().messages.parse({
     model: DESCRIBE_MODEL,
     max_tokens: 1024,
     system:
