@@ -57,10 +57,22 @@ variable "api_key_parameter" {
   default     = "/social-planner/anthropic-api-key"
 }
 
+# Narrowed from ["*"] once the CloudFront domain was known.
+#
+# "*" is right for the first apply — the distribution does not exist yet, so
+# there is no origin to name — and wrong to leave in place: the Function URL is
+# public and unauthenticated, so the only thing standing between a hostile page
+# and a visitor's session is the browser refusing the cross-origin read.
+#
+# This does not restrict curl or a server-side caller; CORS never does. It stops
+# somebody else's site from scripting against this API in your users' browsers.
+#
+# Local development is unaffected: `npm run api` serves its own API on
+# localhost, so the browser never crosses an origin.
 variable "cors_origins" {
-  description = "Origins allowed to call the Function URL. Narrow this to the CloudFront domain after the first apply."
+  description = "Origins allowed to call the Function URL. Scheme and host only, no trailing slash."
   type        = list(string)
-  default     = ["*"]
+  default     = ["https://d252um6eslhku1.cloudfront.net"]
 }
 
 variable "budget_email" {

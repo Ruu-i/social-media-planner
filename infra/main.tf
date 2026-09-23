@@ -307,6 +307,12 @@ resource "aws_lambda_function_url" "api" {
 #
 # The console adds this silently when you create a Function URL by hand, which
 # is why the omission is easy to miss in Terraform.
+#
+# That silent add is also a drift trap. Clearing "block public access" in the
+# console left two extra statements on the policy — one byte-identical to this
+# one — which Terraform neither knows about nor will ever remove. Delete the
+# console's copies, not this resource: this is the only one that survives a
+# fresh apply into an empty account.
 resource "aws_lambda_permission" "function_url_public" {
   statement_id           = "AllowPublicFunctionUrlInvoke"
   action                 = "lambda:InvokeFunctionUrl"
