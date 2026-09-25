@@ -124,7 +124,8 @@ src/
   media/
     types.ts        assets, aspect ratios, which formats a shape allows
     describe.ts     the vision pass — runs ONCE per asset, at upload
-    storage.ts      local disk or S3, behind one interface
+    storage.ts      local disk, for development
+    s3-storage.ts   the same interface on S3 — what the deployed app uses
 infra/
   main.tf           the whole stack — DynamoDB, Lambda, S3, CloudFront, budget
 ```

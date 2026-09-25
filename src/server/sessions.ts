@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { ContentAgent } from "../agent/agent.js";
 import { createMediaStore, createSeededStore, USER_ID } from "../seed.js";
 import { LocalMediaStorage } from "../media/storage.js";
+import { S3MediaStorage } from "../media/s3-storage.js";
 import { Publisher } from "../publisher.js";
 import { MockMetaConnector, MockTokenProvider } from "../connectors/mock.js";
 import {
@@ -34,7 +35,21 @@ import {
  */
 
 const media: MediaStore = createMediaStore();
-const storage = new LocalMediaStorage();
+
+/**
+ * S3 when a bucket is configured, disk otherwise.
+ *
+ * Keyed on MEDIA_BUCKET rather than on STORE, because the two are genuinely
+ * independent: DynamoDB Local with disk-backed media is a reasonable local
+ * setup, and so is the reverse. Tying them to one switch would rule both out.
+ *
+ * In Lambda the fallback is not a fallback — /var/task is read-only, so an
+ * unset MEDIA_BUCKET means every upload fails with EROFS. Terraform always
+ * sets it; this default only ever applies locally.
+ */
+const storage = process.env.MEDIA_BUCKET
+  ? new S3MediaStorage(process.env.MEDIA_BUCKET)
+  : new LocalMediaStorage();
 const store: ContentStore = createSeededStore(undefined, media);
 
 const publisher = new Publisher(store, new MockTokenProvider(), [

@@ -180,10 +180,16 @@ strategy in one design decision.
    counts per format, video duration, ownership, and a public URL requirement.
 5. **Video frame extraction** (ffmpeg) so uploaded videos get described too.
    Seeded videos carry `describedFrom: "VIDEO_FRAME"` already.
-6. **Public URLs** wired through to the connector, once storage is real S3.
+6. ~~**Public URLs** wired through to the connector, once storage is real S3.~~
+   **DONE** — `S3MediaStorage` writes to the media bucket and returns a URL that
+   genuinely resolves, which is what a real connector needs: Meta does not take
+   media bytes on publish, it takes an address and fetches it.
 
-Steps 1-4 are done. 5 and 6 both need real infrastructure rather than more
-design.
+Steps 1-4 and 6 are done. 5 still needs ffmpeg rather than more design.
+
+`LocalMediaStorage` remains, for development. It is not a fallback in Lambda:
+/var/task is read-only, so disk writes there fail with EROFS, and /tmp is
+per-container and discarded. `MEDIA_BUCKET` selects between them.
 
 ---
 
