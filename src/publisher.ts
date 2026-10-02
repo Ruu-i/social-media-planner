@@ -78,8 +78,8 @@ export class Publisher {
       };
     }
 
-    const channel = connections.getChannel(userId, variant.channelId);
-    const connection = connections.getConnectionForChannel(userId, variant.channelId);
+    const channel = await connections.getChannel(userId, variant.channelId);
+    const connection = await connections.getConnectionForChannel(userId, variant.channelId);
     if (!channel || !connection) {
       await this.store.markFailed(variantId, "Channel or connection no longer exists");
       return { variantId, platform: variant.platform, status: "FAILED", detail: "no channel" };
@@ -138,7 +138,7 @@ export class Publisher {
           // The token is dead, and it is shared: every channel under this grant
           // is now broken. Mark the CONNECTION, not the channel, so the user is
           // told to reconnect Meta once rather than chasing each platform.
-          connections.markReauthRequired(connectionId);
+          await connections.markReauthRequired(connectionId);
           await this.store.markFailed(variantId, `Authentication failed: ${error.message}`);
           this.log(`  connection ${connectionId} needs reauthorisation`);
           return { variantId, platform, status: "FAILED", detail: "auth — reconnect required" };

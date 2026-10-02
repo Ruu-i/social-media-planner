@@ -206,7 +206,7 @@ export class DynamoStore implements ContentStore {
       const { variants: variantDrafts, ...itemFields } = draft;
       // Validate everything before writing anything, so a bad third variant
       // cannot leave the first two persisted.
-      for (const v of variantDrafts) assertVariantValid(this.deps, userId, v);
+      for (const v of variantDrafts) await assertVariantValid(this.deps, userId, v);
 
       const now = new Date().toISOString();
       const { campaignId, ...rest } = itemFields;
@@ -222,7 +222,9 @@ export class DynamoStore implements ContentStore {
         updatedAt: now,
       };
 
-      const variants = variantDrafts.map((v) => this.buildVariant(userId, item.id, v));
+      const variants = await Promise.all(
+        variantDrafts.map((v) => this.buildVariant(userId, item.id, v)),
+      );
 
       // One transaction per item: either the idea and all of its channel
       // versions land, or none of them do.
@@ -245,7 +247,7 @@ export class DynamoStore implements ContentStore {
     for (const slot of slots) {
       assertHasOffset(slot.plannedFor);
       for (const channelId of slot.plannedChannelIds) {
-        const channel = this.connections.getChannel(userId, channelId);
+        const channel = await this.connections.getChannel(userId, channelId);
         if (!channel) throw new StoreError(`No channel ${channelId}`, "INVALID_INPUT");
         if (!channel.supportedFormats.includes(slot.plannedFormat)) {
           throw new StoreError(
@@ -292,9 +294,9 @@ export class DynamoStore implements ContentStore {
     drafts: VariantDraft[],
   ): Promise<PostVariant[]> {
     await this.getItem(userId, itemId); // ownership + existence
-    for (const v of drafts) assertVariantValid(this.deps, userId, v);
+    for (const v of drafts) await assertVariantValid(this.deps, userId, v);
 
-    const variants = drafts.map((v) => this.buildVariant(userId, itemId, v));
+    const variants = await Promise.all(drafts.map((v) => this.buildVariant(userId, itemId, v)));
     await this.transact(variants.flatMap((v) => [this.variantPutOp(v), this.variantPointerOp(v)]));
     for (const v of variants) for (const a of v.assetIds) this.media?.markUsed(a);
     return variants;
@@ -344,7 +346,7 @@ export class DynamoStore implements ContentStore {
     }
 
     const next: PostVariant = { ...variant, ...changes, updatedAt: new Date().toISOString() };
-    const channel = assertVariantValid(this.deps, userId, next);
+    const channel = await assertVariantValid(this.deps, userId, next);
     next.platform = channel.platform;
 
     if ((variant.status === "APPROVED" || variant.status === "SCHEDULED") && !approvalSurvives(changes)) {
@@ -385,7 +387,7 @@ export class DynamoStore implements ContentStore {
     const variant = await this.getVariant(userId, variantId);
     assertSchedulable(variant.status, variantId);
 
-    const publishable = this.connections.isPublishable(userId, variant.channelId);
+    const publishable = await this.connections.isPublishable(userId, variant.channelId);
     if (!publishable.ok) {
       throw new StoreError(publishable.reason ?? "Channel cannot publish", "NOT_CONNECTED");
     }
@@ -600,8 +602,12 @@ export class DynamoStore implements ContentStore {
 
   // -- internals -----------------------------------------------------------
 
-  private buildVariant(userId: string, itemId: string, draft: VariantDraft): PostVariant {
-    const channel = assertVariantValid(this.deps, userId, draft);
+  private async buildVariant(
+    userId: string,
+    itemId: string,
+    draft: VariantDraft,
+  ): Promise<PostVariant> {
+    const channel = await assertVariantValid(this.deps, userId, draft);
     const now = new Date().toISOString();
     return {
       ...draft,

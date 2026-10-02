@@ -172,7 +172,7 @@ export class MemoryStore implements ContentStore {
       const { variants: variantDrafts, ...itemFields } = draft;
       // Validate every variant before writing anything, so a bad third variant
       // cannot leave the first two persisted.
-      for (const v of variantDrafts) assertVariantValid(this.deps, userId, v);
+      for (const v of variantDrafts) await assertVariantValid(this.deps, userId, v);
 
       const now = new Date().toISOString();
       const { campaignId, ...rest } = itemFields;
@@ -189,7 +189,9 @@ export class MemoryStore implements ContentStore {
       };
       this.items.set(item.id, item);
 
-      const variants = variantDrafts.map((v) => this.insertVariant(userId, item.id, v));
+      const variants = await Promise.all(
+        variantDrafts.map((v) => this.insertVariant(userId, item.id, v)),
+      );
       created.push({ ...item, variants });
     }
 
@@ -208,7 +210,7 @@ export class MemoryStore implements ContentStore {
     for (const slot of slots) {
       assertHasOffset(slot.plannedFor);
       for (const channelId of slot.plannedChannelIds) {
-        const channel = this.connections.getChannel(userId, channelId);
+        const channel = await this.connections.getChannel(userId, channelId);
         if (!channel) {
           throw new StoreError(`No channel ${channelId}`, "INVALID_INPUT");
         }
@@ -243,8 +245,8 @@ export class MemoryStore implements ContentStore {
   /** Fan an existing idea out to more channels. */
   async addVariants(userId: string, itemId: string, drafts: VariantDraft[]): Promise<PostVariant[]> {
     await this.getItem(userId, itemId); // ownership + existence
-    for (const v of drafts) assertVariantValid(this.deps, userId, v);
-    return drafts.map((v) => this.insertVariant(userId, itemId, v));
+    for (const v of drafts) await assertVariantValid(this.deps, userId, v);
+    return Promise.all(drafts.map((v) => this.insertVariant(userId, itemId, v)));
   }
 
   /**
@@ -287,7 +289,7 @@ export class MemoryStore implements ContentStore {
     }
 
     const next: PostVariant = { ...variant, ...changes, updatedAt: new Date().toISOString() };
-    const channel = assertVariantValid(this.deps, userId, next);
+    const channel = await assertVariantValid(this.deps, userId, next);
     next.platform = channel.platform;
 
     // The human approved WORDS, not a slot in the calendar. A pure time change
@@ -340,7 +342,7 @@ export class MemoryStore implements ContentStore {
       );
     }
 
-    const publishable = this.connections.isPublishable(userId, variant.channelId);
+    const publishable = await this.connections.isPublishable(userId, variant.channelId);
     if (!publishable.ok) {
       throw new StoreError(publishable.reason ?? "Channel cannot publish", "NOT_CONNECTED");
     }
@@ -608,8 +610,12 @@ export class MemoryStore implements ContentStore {
       .sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor));
   }
 
-  private insertVariant(userId: string, itemId: string, draft: VariantDraft): PostVariant {
-    const channel = assertVariantValid(this.deps, userId, draft);
+  private async insertVariant(
+    userId: string,
+    itemId: string,
+    draft: VariantDraft,
+  ): Promise<PostVariant> {
+    const channel = await assertVariantValid(this.deps, userId, draft);
     const now = new Date().toISOString();
     const variant: PostVariant = {
       ...draft,

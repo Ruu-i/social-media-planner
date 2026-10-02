@@ -18,13 +18,26 @@ import { spawnSync } from "node:child_process";
 await rm("dist-lambda", { recursive: true, force: true });
 await mkdir("dist-lambda", { recursive: true });
 
+/**
+ * Two entry points, one zip.
+ *
+ * The API and the publisher worker are separate FUNCTIONS — different triggers,
+ * different concurrency, different failure blast radius — but they share a
+ * store, a domain model and a publisher, so building them separately would mean
+ * bundling the same code twice. One zip with two handlers lets Terraform point
+ * two functions at the same artifact and pick the entry with `handler`.
+ */
 const result = await build({
-  entryPoints: ["src/lambda/handler.ts"],
+  entryPoints: {
+    index: "src/lambda/handler.ts",
+    publisher: "src/lambda/publisher-handler.ts",
+  },
   bundle: true,
   platform: "node",
   target: "node22",
   format: "esm",
-  outfile: "dist-lambda/index.mjs",
+  outdir: "dist-lambda",
+  outExtension: { ".js": ".mjs" },
   // `awslambda` is a runtime global, not a module — esbuild must not try to
   // resolve it.
   external: [],
@@ -38,8 +51,9 @@ const result = await build({
   minify: false, // readable stack traces in CloudWatch are worth the bytes
 });
 
-const bytes = Object.values(result.metafile.outputs)[0]?.bytes ?? 0;
-console.log(`  bundled: dist-lambda/index.mjs  (${(bytes / 1024 / 1024).toFixed(2)} MB)`);
+for (const [file, out] of Object.entries(result.metafile.outputs)) {
+  console.log(`  bundled: ${file}  (${(out.bytes / 1024 / 1024).toFixed(2)} MB)`);
+}
 
 // Zip it, using whatever the platform has.
 const zip = spawnSync(

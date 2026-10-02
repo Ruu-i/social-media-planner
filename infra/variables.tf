@@ -75,6 +75,45 @@ variable "cors_origins" {
   default     = ["https://d252um6eslhku1.cloudfront.net"]
 }
 
+# How often the publisher sweeps for due posts.
+#
+# This is the worst-case lateness of a scheduled post, so it is a product
+# decision rather than a tuning knob: five minutes is invisible for social
+# scheduling, and one minute would be five times the invocations to buy
+# precision nobody asked for.
+variable "sweep_schedule" {
+  description = "EventBridge schedule expression for the publisher sweep."
+  type        = string
+  default     = "rate(5 minutes)"
+}
+
+variable "instagram_app_id" {
+  description = "Instagram app (client) ID. Not a secret — the app SECRET goes in SSM."
+  type        = string
+  # The INSTAGRAM app id from "API setup with Instagram login", not the Meta app
+  # id under App settings → Basic. They are different numbers and only this one
+  # works with Instagram Login.
+  default = "2159460094974977"
+}
+
+variable "public_api_base" {
+  description = "Override for the API's public origin. Empty means derive it from the request Host."
+  type        = string
+  default     = ""
+}
+
+variable "oauth_secret_prefix" {
+  description = "SSM path holding instagram-app-secret and oauth-state-secret."
+  type        = string
+  default     = "/social-planner/oauth"
+}
+
+variable "token_parameter_prefix" {
+  description = "SSM path under which per-connection access tokens are stored."
+  type        = string
+  default     = "/social-planner/tokens"
+}
+
 variable "budget_email" {
   description = "Where budget alerts go. Empty disables the budget."
   type        = string

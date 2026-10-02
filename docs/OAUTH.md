@@ -21,24 +21,99 @@ decision, not a prerequisite for building or demoing this.
 
 ---
 
-## 2. What the user experience looks like
+## 2. Two grants, not one — the correction that matters
+
+This document originally described **one** Meta grant covering both Instagram
+and Facebook. That is true of only one of Meta's two auth paths, and not the one
+most people can use.
+
+| | Facebook Login | Instagram Login |
+|---|---|---|
+| Account types | Instagram **Business** only | Business **and Creator** |
+| Facebook Page | **Required**, Instagram must be linked to it | Not needed |
+| Publishes to | Pages, and Instagram via the Page | Instagram only |
+| Permissions | `pages_show_list`, `pages_manage_posts` | `instagram_business_basic`, `instagram_business_content_publish` |
+
+Creator is what an individual account becomes when it goes professional, and it
+is **unreachable through Facebook Login**. So the account type decides the auth
+path, and the auth path decides what can be published — which means one grant
+covering both platforms cannot be assumed.
+
+Hence `Provider` is now `"instagram" | "facebook"` rather than `"meta"`. The
+model is better for it: a dead Instagram token no longer takes Facebook down
+with it, and `verify.ts` asserts that isolation rather than the old coupling.
+
+**Facebook cannot be a fallback.** The Graph API cannot post to a personal
+Facebook profile at all — that was removed years ago. Facebook posting requires
+a Page you administer, full stop.
 
     ┌──────────────────────────────────────────────┐
     │  Connected accounts                          │
     │                                              │
-    │  Meta            ● Connected                 │
-    │    Instagram     @brewandbean.lk  (Business) │
-    │    Facebook      Brew & Bean Colombo         │
+    │  Instagram       ● @brewandbean.lk (Creator) │
     │                  [ Disconnect ]              │
+    │  Facebook Page     Not available yet         │
+    │                  [ Connect ]  (disabled)     │
     └──────────────────────────────────────────────┘
 
-One button, two channels. The user clicks **Connect Meta**, logs in on
-*Facebook's* site (never yours), approves a permission screen, and lands back on
-your app. They never type a password into anything you wrote.
+---
 
-This is why the code models a `Connection` with `Channel`s underneath it rather
-than a flat list of platforms: the grant is the unit, and the channels come with
-it.
+## 2a. Setting up the Meta app
+
+Development mode throughout — no App Review, no business verification.
+
+Meta reorganises this console often, and app creation is now built around **use
+cases** rather than app types. If the labels below have drifted again, the thing
+to look for is the Instagram use case and, under it, *Instagram login*.
+
+1. **Instagram account** → Settings → *Account type and tools* → switch to
+   **Professional**, then Business or Creator. Both publish; personal cannot.
+
+2. **developers.facebook.com** → **My Apps** → **Create app**.
+
+3. Enter an **app name** and **contact email**, and select a **Meta Business
+   Portfolio**. A business portfolio is required at creation now — if you have
+   none, the dialog offers to make one, which is free.
+
+4. For the use case, choose **"Manage messaging and content on Instagram"**.
+   This is the one that carries content publishing; the permissions this app
+   needs are added by default with it.
+
+5. Open the **Instagram** product and choose **API setup with Instagram login**.
+
+6. **Take the credentials from THIS screen**, not from *App settings → Basic*.
+   There are two different pairs and they are not interchangeable:
+
+   | Where | What | Used by |
+   |---|---|---|
+   | Instagram product → *API setup with Instagram login* | **Instagram app ID / secret** | Instagram Login — what this app uses |
+   | App settings → Basic | Meta app ID / secret | Facebook Login |
+
+   Using the Meta pair for Instagram Login fails at the token exchange with an
+   error that blames the code rather than the credentials, so it is worth
+   checking twice.
+
+7. In the same section, under **business login settings**, add the **OAuth
+   redirect URI**:
+
+       https://<your-function-url>/api/connect/instagram/callback
+
+   Exactly — scheme, host, path, no trailing slash. A mismatch is rejected
+   before the user ever reaches a consent screen.
+
+8. Add your Instagram account as a tester, and accept the invite from the
+   notifications in the Instagram app itself.
+
+Then put the secrets where the Lambda reads them:
+
+```bash
+aws ssm put-parameter --name /social-planner/oauth/instagram-app-secret   --type SecureString --value <instagram app secret> --overwrite
+
+# Signs the OAuth state. Any long random string; it never leaves the server.
+aws ssm put-parameter --name /social-planner/oauth/oauth-state-secret   --type SecureString --value "$(openssl rand -base64 32)" --overwrite
+```
+
+and set `instagram_app_id` in Terraform (the ID is not a secret; the secret is).
 
 ---
 
@@ -83,7 +158,7 @@ and those ids become your channels.
 | **The Instagram account must be linked to a Facebook Page** | The grant is a Page grant; Instagram publishing rides on it. |
 | **HTTPS redirect URI** | Even in development. `localhost` is permitted for testing. |
 | **Privacy policy URL** | Required on the app before it leaves development mode. |
-| **Rate limits** | Around 25 API-published posts per Instagram account per 24 hours. Your scheduler must respect this, not discover it. |
+| **Rate limits** | 100 API-published posts and 400 media containers per Instagram account per rolling 24 hours. Your scheduler must respect this, not discover it. |
 
 Permissions to request (verify current names against Meta's docs before
 implementing — they rename these periodically):

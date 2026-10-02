@@ -1,6 +1,8 @@
 import {
   agentFor,
+  connectService,
   createSession,
+  ensureStoreReady,
   media,
   publisher,
   spendGuard,
@@ -11,8 +13,11 @@ import {
 import { describeImage, canDescribe } from "../media/describe.js";
 import { ensureApiKey } from "../agent/provider.js";
 import { suitableFormats } from "../media/types.js";
+import { ensureOAuthSecrets } from "../oauth/secrets.js";
+import { OAuthError } from "../oauth/types.js";
 import { StoreError } from "../store/memory.js";
 import { MediaError } from "../store/media.js";
+import type { Provider } from "../schemas.js";
 import type { FunctionUrlEvent } from "./runtime.js";
 
 /**
@@ -44,7 +49,13 @@ export interface BinaryResult {
   body: Buffer;
 }
 
-export type RouteResult = JsonResult | BinaryResult;
+export interface RedirectResult {
+  kind: "redirect";
+  statusCode: number;
+  location: string;
+}
+
+export type RouteResult = JsonResult | BinaryResult | RedirectResult;
 
 const json = (statusCode: number, body: unknown): JsonResult => ({
   kind: "json",
@@ -53,6 +64,14 @@ const json = (statusCode: number, body: unknown): JsonResult => ({
 });
 
 export function errorResult(error: unknown): JsonResult {
+  if (error instanceof OAuthError) {
+    // NOT_CONFIGURED is 503 rather than 500: the app is fine, this provider
+    // just has not been set up yet, and the distinction is the difference
+    // between "you broke it" and "that is not available".
+    const statusCode =
+      error.code === "NOT_CONFIGURED" ? 503 : error.code === "BAD_STATE" ? 400 : 409;
+    return json(statusCode, { error: error.code, message: error.message });
+  }
   if (error instanceof StoreError || error instanceof MediaError) {
     const statusCode =
       error.code === "NOT_FOUND"
@@ -113,6 +132,10 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
   const path = event.rawPath;
 
   try {
+    // The table is seeded on the first request that finds it empty. Awaited
+    // here rather than per-route so no route can forget.
+    await ensureStoreReady();
+
     if (method === "POST" && path === "/api/sessions") {
       return json(200, { sessionId: createSession() });
     }
@@ -147,6 +170,63 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
     const cancel = /^\/api\/variants\/([^/]+)\/cancel$/.exec(path);
     if (method === "POST" && cancel) {
       return json(200, { variant: await store.cancelVariant(USER_ID, cancel[1]!) });
+    }
+
+    if (method === "GET" && path === "/api/connections") {
+      // Resolved before listProviders(), or every provider reports itself
+      // unconfigured on a cold start and the UI greys out a working button.
+      await ensureOAuthSecrets();
+      return json(200, {
+        connections: (await store.connectionStore.listConnections(USER_ID)).map((c) => ({
+          // Deliberately lossy, exactly like the agent's channel view:
+          // tokenRef and scopes never leave the server.
+          id: c.id,
+          provider: c.provider,
+          status: c.status,
+          connectedAt: c.connectedAt,
+          expiresAt: c.expiresAt,
+        })),
+        providers: connectService.listProviders(),
+      });
+    }
+
+    const start = /^\/api\/connect\/([^/]+)\/start$/.exec(path);
+    if (method === "GET" && start) {
+      await ensureOAuthSecrets();
+      const provider = start[1] as Provider;
+      // Returned as JSON rather than a 302 so the browser leaves the SPA by an
+      // explicit click, and a misconfigured provider surfaces as a readable
+      // message instead of a redirect to an error page.
+      return json(200, {
+        url: connectService.start(USER_ID, provider, redirectUriFor(event, provider)),
+      });
+    }
+
+    const callback = /^\/api\/connect\/([^/]+)\/callback$/.exec(path);
+    if (method === "GET" && callback) {
+      await ensureOAuthSecrets();
+      const provider = callback[1] as Provider;
+      const params = new URLSearchParams(event.rawQueryString ?? "");
+
+      // The user declined, or the provider refused. Not an error on our side.
+      const denied = params.get("error");
+      if (denied) {
+        return redirectToUi(`connected=0&reason=${encodeURIComponent(denied)}`);
+      }
+
+      const result = await connectService.callback(
+        provider,
+        params.get("code") ?? "",
+        params.get("state") ?? "",
+        redirectUriFor(event, provider),
+      );
+      return redirectToUi(`connected=1&handle=${encodeURIComponent(result.handles[0] ?? "")}`);
+    }
+
+    const disconnect = /^\/api\/connections\/([^/]+)\/disconnect$/.exec(path);
+    if (method === "POST" && disconnect) {
+      await connectService.disconnect(USER_ID, disconnect[1]!);
+      return json(200, { disconnected: true });
     }
 
     if (method === "POST" && path === "/api/publish/run") {
@@ -237,6 +317,36 @@ async function uploadMedia(body: Record<string, unknown>): Promise<RouteResult> 
     quality: described.quality,
     suitableFormats: suitableFormats(asset),
   });
+}
+
+
+/**
+ * The redirect URI handed to the provider.
+ *
+ * Must match what is registered with Meta EXACTLY — scheme, host, path, no
+ * trailing slash — or the authorization is rejected before the user sees a
+ * consent screen. Taken from configuration rather than the request host so it
+ * cannot drift with whatever hostname a request happened to arrive on.
+ */
+function redirectUriFor(event: FunctionUrlEvent, provider: string): string {
+  // `||` not `??`: Terraform sets this to the empty string when unconfigured,
+  // and "" is not nullish — `??` would happily build "/api/connect/..." with no
+  // origin at all, which Meta rejects as an invalid redirect URI.
+  const base = (process.env.PUBLIC_API_BASE || `https://${event.headers.host ?? ""}`).replace(
+    /\/$/,
+    "",
+  );
+  return `${base}/api/connect/${provider}/callback`;
+}
+
+/** Hand the browser back to the SPA after the round trip. */
+function redirectToUi(query: string): RouteResult {
+  const ui = (process.env.PUBLIC_UI_BASE ?? "/").replace(/\/$/, "");
+  return {
+    kind: "redirect",
+    statusCode: 302,
+    location: `${ui}/?${query}`,
+  };
 }
 
 function mimeFor(filePath: string): string {

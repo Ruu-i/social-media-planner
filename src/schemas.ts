@@ -10,11 +10,23 @@ import { z } from "zod";
 // ---------------------------------------------------------------------------
 
 /**
- * A provider is one OAuth grant. Meta is a single grant that returns access to
- * BOTH an Instagram Business account and a Facebook Page — which is why they
- * are the sensible first pair, and why one expired token breaks both at once.
+ * A provider is ONE OAuth grant.
+ *
+ * This was a single `meta` grant, on the understanding that one Meta login
+ * returns access to both an Instagram account and a Facebook Page. That is true
+ * of exactly one of Meta's two auth paths, and not the one most users can take.
+ *
+ *   Instagram Login   — Business AND CREATOR accounts, no Facebook Page needed.
+ *                       Publishes to Instagram only.
+ *   Facebook Login    — requires a Page, and an Instagram account linked to it.
+ *                       Publishes to Pages, and to Instagram through the Page.
+ *
+ * Creator accounts are the common case for the people this tool is for, and
+ * they are only reachable through Instagram Login — so one grant covering both
+ * platforms cannot be assumed. Two grants is also the better model: a dead
+ * Instagram token no longer takes Facebook down with it.
  */
-export const ProviderSchema = z.enum(["meta"]);
+export const ProviderSchema = z.enum(["instagram", "facebook"]);
 export type Provider = z.infer<typeof ProviderSchema>;
 
 export const PlatformSchema = z.enum(["instagram", "facebook"]);

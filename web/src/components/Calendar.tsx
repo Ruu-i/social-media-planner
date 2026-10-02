@@ -327,19 +327,63 @@ function VariantRow({
             <p className="text-[11px] text-rose-600">{variant.failureReason}</p>
           )}
 
-          {variant.status !== "PUBLISHED" && variant.status !== "CANCELLED" && (
-            <button
-              onClick={() => act(() => api.cancel(variant.id))}
-              disabled={working}
-              className="text-[11px] text-stone-400 underline transition hover:text-rose-600"
-            >
-              Cancel this version
-            </button>
-          )}
+          {/* Where this post is in its life, in words.
+              The status pill alone was misleading: an already-approved post
+              shows no Approve button, which reads as a missing feature rather
+              than a completed step. Saying so removes the question. */}
+          <div className="flex flex-wrap items-center gap-2 border-t border-stone-200/70 pt-3">
+            <span className="text-[11px] text-stone-500">{lifecycleOf(variant)}</span>
+
+            {(variant.status === "PENDING_APPROVAL" || variant.status === "DRAFT") && (
+              <button
+                onClick={() => act(() => api.approve(variant.id))}
+                disabled={working}
+                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-40"
+              >
+                Approve this version
+              </button>
+            )}
+
+            {variant.status !== "PUBLISHED" && variant.status !== "CANCELLED" && (
+              <button
+                onClick={() => act(() => api.cancel(variant.id))}
+                disabled={working}
+                className="ml-auto text-[11px] text-stone-400 underline transition hover:text-rose-600"
+              >
+                Cancel this version
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>
   );
+}
+
+/**
+ * One sentence saying what has happened and what happens next.
+ *
+ * The approval gate is the most important behaviour in this product and it was
+ * invisible: a SCHEDULED post is PAST approval, so it correctly shows no
+ * Approve button — and a user reasonably reads that absence as "there is no way
+ * to approve things".
+ */
+function lifecycleOf(v: Variant): string {
+  switch (v.status) {
+    case "DRAFT":
+    case "PENDING_APPROVAL":
+      return "Waiting for you. Nothing is scheduled until you approve it.";
+    case "APPROVED":
+      return "You approved this. The agent can now schedule it.";
+    case "SCHEDULED":
+      return `Approved and scheduled. It posts automatically at ${formatTime(v.scheduledFor)}.`;
+    case "PUBLISHED":
+      return "Published.";
+    case "FAILED":
+      return "Publishing failed. Nothing was posted.";
+    case "CANCELLED":
+      return "Cancelled. It will not be posted.";
+  }
 }
 
 function mediaLine(v: Variant): string {

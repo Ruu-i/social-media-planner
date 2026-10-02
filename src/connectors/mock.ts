@@ -29,14 +29,24 @@ import {
  * publisher runs in a worker rather than a request handler.
  */
 export class MockMetaConnector implements SocialConnector {
-  readonly provider: Provider = "meta";
-  readonly platforms: Platform[] = ["instagram", "facebook"];
+  readonly provider: Provider;
+  readonly platforms: Platform[];
 
   /** idempotencyKey -> result, so a replay returns the original post. */
   private published = new Map<string, PublishResult>();
   private failures: PublishFailureKind[] = [];
 
-  constructor(private log: (line: string) => void = () => {}) {}
+  /**
+   * Defaults to Instagram, because that is the grant that works without a
+   * Facebook Page and so the one most users will have.
+   */
+  constructor(
+    private log: (line: string) => void = () => {},
+    provider: Provider = "instagram",
+  ) {
+    this.provider = provider;
+    this.platforms = provider === "instagram" ? ["instagram"] : ["facebook"];
+  }
 
   /** Queue up failures for the next N calls, to exercise publisher policy. */
   failNext(...kinds: PublishFailureKind[]) {

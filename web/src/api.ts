@@ -84,6 +84,26 @@ export interface Account {
   supportedFormats: Format[];
 }
 
+/**
+ * One OAuth grant. Note what is absent: no token, no tokenRef, no scopes —
+ * the server does not send them, so the browser cannot leak them.
+ */
+export interface Connection {
+  id: string;
+  provider: string;
+  status: "ACTIVE" | "EXPIRED" | "REAUTH_REQUIRED";
+  connectedAt: string;
+  expiresAt: string | null;
+}
+
+/** A provider the server knows about, and whether its app credentials exist. */
+export interface ProviderStatus {
+  provider: string;
+  configured: boolean;
+  /** Why it cannot be connected. Present only when `configured` is false. */
+  reason?: string;
+}
+
 export interface PublishOutcome {
   variantId: string;
   platform: Platform;
@@ -141,6 +161,26 @@ export const api = {
   publishDue: () =>
     fetch(apiUrl("/api/publish/run"), { method: "POST" }).then(json<{ outcomes: PublishOutcome[] }>),
 
+  connections: () =>
+    fetch(apiUrl("/api/connections")).then(
+      json<{ connections: Connection[]; providers: ProviderStatus[] }>,
+    ),
+
+  /**
+   * Returns the provider's URL rather than following it.
+   *
+   * The redirect has to happen as a full page navigation the user can see —
+   * fetch-following it would land the consent page inside an XHR, where it
+   * cannot be displayed and the user never gets to approve anything.
+   */
+  connectStart: (provider: string) =>
+    fetch(apiUrl(`/api/connect/${provider}/start`)).then(json<{ url: string }>),
+
+  disconnect: (connectionId: string) =>
+    fetch(apiUrl(`/api/connections/${connectionId}/disconnect`), { method: "POST" }).then(
+      json<{ disconnected: boolean }>,
+    ),
+
   upload: (filename: string, dataBase64: string) =>
     fetch(apiUrl("/api/media"), {
       method: "POST",
@@ -176,8 +216,13 @@ export function streamTurn(
   const assets = attachedAssetIds.length
     ? `&assets=${encodeURIComponent(attachedAssetIds.join(","))}`
     : "";
-  const url = `/api/sessions/${sessionId}/stream?q=${encodeURIComponent(message)}${assets}`;
-  const source = new EventSource(url);
+  const path = `/api/sessions/${sessionId}/stream?q=${encodeURIComponent(message)}${assets}`;
+  // apiUrl, NOT a bare relative path. Every other call goes through it; this one
+  // did not, so in production the stream was opened against CloudFront — which
+  // answers unknown paths with index.html, so EventSource would fail on HTML
+  // where every other request succeeded. Locally it worked, because Vite's proxy
+  // makes relative and absolute the same thing.
+  const source = new EventSource(apiUrl(path));
 
   source.addEventListener("tool", (e) =>
     handlers.onTool?.(JSON.parse((e as MessageEvent).data).name),

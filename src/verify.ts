@@ -207,7 +207,9 @@ try {
 } catch (e) {
   check(
     "an expired connection blocks scheduling",
-    e instanceof StoreError && e.code === "NOT_CONNECTED" && /reconnect meta/i.test(e.message),
+    // Names the specific provider rather than "meta". With two independent
+    // grants, "reconnect" is useless advice unless it says WHICH.
+    e instanceof StoreError && e.code === "NOT_CONNECTED" && /reconnect facebook/i.test(e.message),
     e instanceof StoreError ? e.message : String(e),
   );
 }
@@ -595,10 +597,17 @@ try {
 
     check("an AUTH failure marks the variant FAILED", outcome?.status === "FAILED");
     const accounts = await st.getConnectedAccounts(USER_ID);
+    // This assertion used to be the opposite: one Meta grant backed both
+    // platforms, so an Instagram AUTH failure took Facebook down with it and
+    // the test pinned that coupling in place. Splitting the grant turned a
+    // consequence into a bug, so the test now asserts the isolation instead —
+    // a dead Instagram token must leave Facebook publishable.
+    const ig = accounts.find((a) => a.platform === "instagram");
+    const fb = accounts.find((a) => a.platform === "facebook");
     check(
-      "an AUTH failure takes BOTH Meta channels down together",
-      accounts.length === 2 && accounts.every((a) => a.connectionStatus === "REAUTH_REQUIRED"),
-      JSON.stringify(accounts.map((a) => a.connectionStatus)),
+      "an AUTH failure takes down ONLY the failing platform's grant",
+      ig?.connectionStatus === "REAUTH_REQUIRED" && fb?.connectionStatus === "ACTIVE",
+      JSON.stringify(accounts.map((a) => `${a.platform}:${a.connectionStatus}`)),
     );
   }
 

@@ -7,6 +7,9 @@ out/
 # never commit key backups
 .env.*
 !.env.example
+# ...except the production API origin, which is a public URL and MUST be
+# committed, or a build on another machine silently produces a broken bundle.
+!web/.env.production
 
 # Uploaded photos and videos — user data, never commit.
 # Anchored with a leading slash: a bare `media/` also matches src/media/,

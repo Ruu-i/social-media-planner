@@ -180,9 +180,23 @@ async function writeBody(
 }
 
 function writeResult(raw: ResponseStream, result: RouteResult): Promise<void> {
-  return result.kind === "binary"
-    ? writeBody(raw, result.statusCode, result.contentType, result.body)
-    : writeJson(raw, result);
+  if (result.kind === "binary") {
+    return writeBody(raw, result.statusCode, result.contentType, result.body);
+  }
+  if (result.kind === "redirect") {
+    // A 302 with no Location header is a blank page, not a redirect — and the
+    // OAuth callback is the one route a user reaches in their own browser,
+    // where that failure is all they would see.
+    const stream = awslambda.HttpResponseStream.from(raw, {
+      statusCode: result.statusCode,
+      headers: { Location: result.location, "Content-Type": "text/plain" },
+    });
+    return pipeline(
+      Readable.from([`Redirecting to ${result.location}`]),
+      stream as unknown as NodeJS.WritableStream,
+    );
+  }
+  return writeJson(raw, result);
 }
 
 function writeJson(raw: ResponseStream, result: RouteResult): Promise<void> {

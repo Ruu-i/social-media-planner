@@ -48,12 +48,12 @@ export function assertHasOffset(value: string): void {
 }
 
 /** Resolves the channel and checks the variant against what it can actually do. */
-export function assertVariantValid(
+export async function assertVariantValid(
   deps: { connections: ConnectionStore; media: MediaStore | null },
   userId: string,
   v: VariantDraft,
-): Channel {
-  const channel = deps.connections.getChannel(userId, v.channelId);
+): Promise<Channel> {
+  const channel = await deps.connections.getChannel(userId, v.channelId);
   if (!channel) {
     throw new StoreError(
       `No channel ${v.channelId}. Call get_connected_accounts for valid ids.`,

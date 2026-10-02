@@ -1,9 +1,20 @@
 import { randomUUID } from "node:crypto";
 
 import { ContentAgent } from "../agent/agent.js";
-import { createMediaStore, createSeededStore, USER_ID } from "../seed.js";
+import { createConnectionStore, createMediaStore, createSeededStore, profile, USER_ID } from "../seed.js";
+import { DynamoStore } from "../store/dynamo.js";
+import { DynamoConnectionStore } from "../store/connections-dynamo.js";
+import { ensureSeeded } from "../store/bootstrap.js";
+import { MockScheduler } from "../scheduler/mock.js";
+import type { ConnectionStore } from "../store/connections.js";
 import { LocalMediaStorage } from "../media/storage.js";
 import { S3MediaStorage } from "../media/s3-storage.js";
+import { ConnectService } from "../oauth/connect.js";
+import { InstagramOAuthProvider } from "../oauth/instagram.js";
+import { UnavailableProvider } from "../oauth/unavailable.js";
+import { createTokenStore } from "../oauth/tokens.js";
+import type { OAuthProvider } from "../oauth/types.js";
+import type { Provider } from "../schemas.js";
 import { Publisher } from "../publisher.js";
 import { MockMetaConnector, MockTokenProvider } from "../connectors/mock.js";
 import {
@@ -50,7 +61,55 @@ const media: MediaStore = createMediaStore();
 const storage = process.env.MEDIA_BUCKET
   ? new S3MediaStorage(process.env.MEDIA_BUCKET)
   : new LocalMediaStorage();
-const store: ContentStore = createSeededStore(undefined, media);
+/**
+ * The content store, and the line that was quietly wrong for the whole deploy.
+ *
+ * This read `createSeededStore(...)` unconditionally — so the deployed Lambda
+ * ran entirely on an in-memory store rebuilt from the seed on every cold start,
+ * while STORE=dynamo and DDB_TABLE sat in the environment doing nothing. The
+ * table held one rate-limit row. Posts the agent wrote, approvals, schedules
+ * and OAuth connections all lived in one container and died with it.
+ *
+ * It looked like it worked because the seed and the table use the same ids, so
+ * reads returned plausible data. Nothing failed; it just never persisted.
+ */
+const connectionStore: ConnectionStore =
+  process.env.STORE === "dynamo"
+    ? new DynamoConnectionStore(createDynamoClient())
+    : createConnectionStore();
+
+const store: ContentStore =
+  process.env.STORE === "dynamo"
+    ? new DynamoStore(
+        createDynamoClient(),
+        profile,
+        connectionStore,
+        new MockScheduler(),
+        media,
+        process.env.DDB_TABLE,
+      )
+    : createSeededStore(undefined, media);
+
+/**
+ * Write the demo data once, on the first request that finds the table empty.
+ *
+ * Memoised per container and awaited at the route boundary rather than run at
+ * module load, because a cold start must not block on DynamoDB before it knows
+ * whether the request even needs it.
+ */
+let seeding: Promise<boolean> | null = null;
+
+export function ensureStoreReady(): Promise<boolean> {
+  if (process.env.STORE !== "dynamo") return Promise.resolve(false);
+  seeding ??= ensureSeeded(createDynamoClient()).catch((error) => {
+    // Never fatal. A failed seed leaves an empty calendar, which is survivable;
+    // taking every route down because the demo content could not be written is
+    // not.
+    console.error(JSON.stringify({ msg: "seed failed", error: String(error) }));
+    return false;
+  });
+  return seeding;
+}
 
 const publisher = new Publisher(store, new MockTokenProvider(), [
   new MockMetaConnector(() => {}),
@@ -96,5 +155,35 @@ const budgets: BudgetStore =
     : new MemoryBudgetStore();
 
 export const spendGuard = new SpendGuard(budgets);
+
+/**
+ * The connect flow.
+ *
+ * Instagram only for now, and that is a capability statement rather than a
+ * shortcut: Instagram Login is the single path that reaches CREATOR accounts,
+ * and it needs no Facebook Page. Facebook Pages are a second, independent grant
+ * — registering it here before its connector exists would put a button in the
+ * UI that cannot work.
+ */
+const oauthProviders = new Map<Provider, OAuthProvider>([
+  ["instagram", new InstagramOAuthProvider()],
+  // Declared, not omitted. Leaving Facebook out of this map made its row
+  // vanish from the UI the moment its connection was deleted — the product
+  // appeared to forget the platform existed. Declaring it unavailable keeps
+  // the row, with a reason, and makes the real implementation a swap.
+  [
+    "facebook",
+    new UnavailableProvider(
+      "facebook",
+      "Facebook posting needs a Page you administer, and is not wired up yet.",
+    ),
+  ],
+]);
+
+export const connectService = new ConnectService(
+  store.connectionStore,
+  createTokenStore(),
+  oauthProviders,
+);
 
 export { store, media, storage, publisher, conversations, USER_ID };

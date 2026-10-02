@@ -5,7 +5,7 @@ import type {
   ContentItemWithVariants,
 } from "./schemas.js";
 import { MemoryStore } from "./store/memory.js";
-import { ConnectionStore } from "./store/connections.js";
+import { MemoryConnectionStore, type ConnectionStore } from "./store/connections.js";
 import { MockScheduler } from "./scheduler/mock.js";
 import type { Scheduler } from "./scheduler/types.js";
 import type { ContentStore } from "./store/types.js";
@@ -23,7 +23,7 @@ import { aspectRatioOf, type MediaAsset } from "./media/types.js";
 
 export const USER_ID = "user_demo";
 
-const profile: BusinessProfile = {
+export const profile: BusinessProfile = {
   businessName: "Brew & Bean",
   description:
     "A small independent coffee shop roasting our own beans, with a compact food menu and a " +
@@ -56,40 +56,50 @@ const profile: BusinessProfile = {
  * Note `tokenRef`: a pointer into a secret store, not a token. Nothing in this
  * process — and certainly nothing the agent can call — holds the real value.
  */
-const connection: Connection = {
-  id: "conn_meta001",
-  userId: USER_ID,
-  provider: "meta",
-  status: "ACTIVE",
-  tokenRef: "secretsmanager://brewandbean/meta/user_demo",
-  scopes: [
-    "instagram_business_basic",
-    "instagram_business_content_publish",
-    "pages_show_list",
-    "pages_manage_posts",
-  ],
-  connectedAt: "2026-09-01T09:00:00+05:30",
-  expiresAt: "2026-11-01T09:00:00+05:30",
-};
+export const seedConnections: Connection[] = [
+  {
+    id: "conn_ig001",
+    userId: USER_ID,
+    provider: "instagram",
+    status: "ACTIVE",
+    tokenRef: "ssm://social-planner/tokens/user_demo/instagram",
+    scopes: ["instagram_business_basic", "instagram_business_content_publish"],
+    connectedAt: "2026-09-01T09:00:00+05:30",
+    expiresAt: "2026-11-01T09:00:00+05:30",
+  },
+  {
+    id: "conn_fb001",
+    userId: USER_ID,
+    provider: "facebook",
+    status: "ACTIVE",
+    tokenRef: "ssm://social-planner/tokens/user_demo/facebook",
+    scopes: ["pages_show_list", "pages_manage_posts"],
+    connectedAt: "2026-09-01T09:00:00+05:30",
+    // Separate expiry is the point of splitting them: Instagram going stale
+    // must not stop Facebook publishing, and vice versa.
+    expiresAt: "2026-12-01T09:00:00+05:30",
+  },
+];
 
-const channels: Channel[] = [
+export const seedChannels: Channel[] = [
   {
     id: "ch_ig001",
-    connectionId: "conn_meta001",
+    connectionId: "conn_ig001",
     userId: USER_ID,
     platform: "instagram",
     externalId: "17841400000000000",
     handle: "@brewandbean.lk",
-    // BUSINESS matters: Meta's publishing API does not work with personal
-    // Instagram accounts at all, so this is a hard gate, not a preference.
-    accountType: "BUSINESS",
+    // Publishing does not work with PERSONAL accounts at all — a hard gate,
+    // not a preference. CREATOR and BUSINESS both work, but only through
+    // Instagram Login; Facebook Login reaches Business accounts alone.
+    accountType: "CREATOR",
     supportedFormats: ["POST", "CAROUSEL", "REEL", "STORY"],
     maxCaptionLength: 2200,
     maxHashtags: 30,
   },
   {
     id: "ch_fb001",
-    connectionId: "conn_meta001",
+    connectionId: "conn_fb001",
     userId: USER_ID,
     platform: "facebook",
     externalId: "1000000000000",
@@ -103,10 +113,16 @@ const channels: Channel[] = [
 ];
 
 /** Content already on the calendar, so the agent has something to plan around. */
-function seedContent(): ContentItemWithVariants[] {
+export function seedContent(): ContentItemWithVariants[] {
   const monday = new Date();
   monday.setDate(monday.getDate() + ((8 - monday.getDay()) % 7 || 7));
   monday.setHours(18, 0, 0, 0);
+  // A separate day, so the calendar shows two distinct groups rather than one
+  // pile — which is also what makes the differing statuses legible side by side.
+  const saturday = new Date(monday);
+  saturday.setDate(saturday.getDate() + 5);
+  saturday.setHours(9, 0, 0, 0);
+
   const now = new Date().toISOString();
 
   const base = {
@@ -176,6 +192,61 @@ function seedContent(): ContentItemWithVariants[] {
           hashtags: [],
           callToAction: "Open 7am-6pm, come in and try it.",
           scheduleId: "sch_seed001b",
+        },
+      ],
+    },
+    /**
+     * A draft waiting on the human.
+     *
+     * Every other seeded post is SCHEDULED, which meant the approval gate — the
+     * single most important behaviour in this product — was invisible to anyone
+     * opening the app: no post was ever in a state where Approve applied, so the
+     * button never rendered and the feature looked absent.
+     *
+     * One pending item fixes that. It is also the honest demo: this is what the
+     * agent actually produces, and what it cannot do next without you.
+     */
+    {
+      id: "item_seed002",
+      userId: USER_ID,
+      campaignId: null,
+      plannedFor: null,
+      plannedChannelIds: [],
+      plannedFormat: null,
+      topic: "Saturday morning regulars",
+      coreMessage: "The 7am crowd has its own rhythm, and it is worth showing.",
+      pillar: "The people and the place",
+      contentCategory: "community",
+      rationale: "Balances a promotional week with something human.",
+      createdAt: now,
+      updatedAt: now,
+      variants: [
+        {
+          ...base,
+          // MUST override base's itemId. `base` is shared with item_seed001 and
+          // carries its id, so spreading it alone files this variant under the
+          // wrong post — it rendered nested inside "Cold brew relaunch".
+          itemId: "item_seed002",
+          // The agent drafts; it cannot approve. There is no tool that sets
+          // this to APPROVED — only the button in the UI can.
+          status: "PENDING_APPROVAL" as const,
+          id: "var_seed002a",
+          channelId: "ch_ig001",
+          platform: "instagram" as const,
+          scheduledFor: saturday.toISOString(),
+          media: {
+            format: "POST" as const,
+            imageConcept: "The counter at 7am, steam and morning light, no people posing.",
+          },
+          hook: "Saturday at 7am has its own regulars.",
+          caption:
+            "Saturday at 7am has its own regulars.\n\nSame seats, same orders, barely " +
+            "any talking until the first cup is down. It is the quietest hour we have " +
+            "and somehow the busiest.",
+          assetIds: ["asset_roaster01"],
+          hashtags: ["colombocafe", "morningcoffee", "srilankacoffee"],
+          callToAction: "Come find your seat.",
+          scheduleId: null,
         },
       ],
     },
@@ -254,7 +325,7 @@ export function createMediaStore(): MediaStore {
 }
 
 export function createConnectionStore(): ConnectionStore {
-  return new ConnectionStore([connection], channels);
+  return new MemoryConnectionStore(seedConnections, seedChannels);
 }
 
 export function createSeededStore(
@@ -264,12 +335,22 @@ export function createSeededStore(
   return new MemoryStore(profile, createConnectionStore(), scheduler, media, seedContent());
 }
 
-/** A store whose Meta token has expired — both channels go down together. */
+/**
+ * A store where every grant needs re-authorising.
+ *
+ * Both are expired explicitly. That used to be unavoidable — one Meta grant
+ * backed both platforms, so one dead token took everything down. Now it is a
+ * deliberate choice for the test, and the fact that it HAS to be stated is the
+ * improvement: Instagram and Facebook can now fail independently.
+ */
 export function createStoreWithExpiredConnection(): MemoryStore {
-  const expired: Connection = { ...connection, status: "REAUTH_REQUIRED" };
+  const expired: Connection[] = seedConnections.map((c) => ({
+    ...c,
+    status: "REAUTH_REQUIRED" as const,
+  }));
   return new MemoryStore(
     profile,
-    new ConnectionStore([expired], channels),
+    new MemoryConnectionStore(expired, seedChannels),
     new MockScheduler(),
     createMediaStore(),
     seedContent(),
@@ -278,19 +359,19 @@ export function createStoreWithExpiredConnection(): MemoryStore {
 
 /** A store whose Instagram account is personal — Meta cannot publish to it. */
 export function createStoreWithPersonalInstagram(): MemoryStore {
-  const personal = channels.map((c) =>
+  const personal = seedChannels.map((c) =>
     c.platform === "instagram" ? { ...c, accountType: "PERSONAL" as const } : c,
   );
   return new MemoryStore(
     profile,
-    new ConnectionStore([connection], personal),
+    new MemoryConnectionStore(seedConnections, personal),
     new MockScheduler(),
     createMediaStore(),
     seedContent(),
   );
 }
 
-export { profile as demoProfile, channels as demoChannels };
+export { profile as demoProfile, seedChannels as demoChannels };
 
 
 // ---------------------------------------------------------------------------

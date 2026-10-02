@@ -182,7 +182,13 @@ resource "aws_iam_role_policy" "lambda" {
           "logs:CreateLogStream",
           "logs:PutLogEvents",
         ]
-        Resource = "${aws_cloudwatch_log_group.lambda.arn}:*"
+        # Both functions share this role, and each writes to its OWN log group.
+        # Granting only the API's means the publisher runs fine but logs
+        # nothing — the worst possible outcome for a process nobody watches.
+        Resource = [
+          "${aws_cloudwatch_log_group.lambda.arn}:*",
+          "${aws_cloudwatch_log_group.publisher.arn}:*",
+        ]
       },
       {
         Sid    = "TableAccess"
@@ -208,6 +214,31 @@ resource "aws_iam_role_policy" "lambda" {
         Effect   = "Allow"
         Action   = ["s3:GetObject", "s3:PutObject"]
         Resource = "${aws_s3_bucket.media.arn}/*"
+      },
+      {
+        # User access tokens, one SecureString per connected account.
+        #
+        # Write and DELETE as well as read: connecting stores a token,
+        # reconnecting overwrites it, and disconnecting must actually destroy
+        # it rather than orphan a live credential nobody is tracking.
+        Sid    = "ConnectionTokens"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:PutParameter",
+          "ssm:DeleteParameter",
+        ]
+        Resource = "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.token_parameter_prefix}/*"
+      },
+      {
+        # The OAuth app secret and the state signing key. GetParameters
+        # (plural) is a DIFFERENT action from GetParameter and is the one the
+        # batch read actually calls — granting only the singular fails at
+        # runtime with an access denied that names a permission you did grant.
+        Sid    = "OAuthSecrets"
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:GetParameters"]
+        Resource = "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.oauth_secret_prefix}/*"
       },
       {
         # Bedrock, for when the account's on-demand quota is granted. This SDK
@@ -271,6 +302,20 @@ resource "aws_lambda_function" "api" {
       DEMO_TURNS_PER_HOUR   = tostring(var.turns_per_hour)
       LLM_PROVIDER          = var.llm_provider
       API_KEY_PARAMETER     = var.api_key_parameter
+
+      # OAuth. The app ID is not a secret; the app secret and the state signing
+      # key are, and arrive from SSM at cold start rather than living here where
+      # console read access would expose them.
+      INSTAGRAM_APP_ID       = var.instagram_app_id
+      OAUTH_SECRET_PREFIX    = var.oauth_secret_prefix
+      TOKEN_PARAMETER_PREFIX = var.token_parameter_prefix
+      # Cannot be aws_lambda_function_url.api.function_url: the URL depends on
+      # the function, so reading it here is a dependency cycle. Left empty, the
+      # handler derives the redirect URI from the request's Host header, which
+      # on a Function URL request IS the function's own hostname. Set it only
+      # when the API is reached through some other name.
+      PUBLIC_API_BASE = var.public_api_base
+      PUBLIC_UI_BASE  = "https://${aws_cloudfront_distribution.web.domain_name}"
       # Defeats Lambda's undocumented small-frame buffering on SSE.
       SSE_PAD_BYTES = "1024"
       NODE_OPTIONS  = "--enable-source-maps"
@@ -278,6 +323,84 @@ resource "aws_lambda_function" "api" {
   }
 
   depends_on = [aws_cloudwatch_log_group.lambda]
+}
+
+# ---------------------------------------------------------------------------
+# Publisher worker — the thing that actually makes "scheduled" mean something
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudwatch_log_group" "publisher" {
+  name              = "/aws/lambda/${local.name}-publisher"
+  retention_in_days = 7
+}
+
+# A SEPARATE function from the API, sharing one zip.
+#
+# Separate because the triggers have nothing in common: the API is synchronous,
+# public, and streams; this is asynchronous, private, and runs unattended. One
+# function serving both would mean a public URL that can also be made to publish
+# posts, and a crawler-driven concurrency spike competing with the thing whose
+# job is to post on time.
+resource "aws_lambda_function" "publisher" {
+  function_name = "${local.name}-publisher"
+  role          = aws_iam_role.lambda.arn
+  handler       = "publisher.handler"
+  runtime       = "nodejs22.x"
+
+  filename         = var.lambda_zip
+  source_code_hash = filebase64sha256(var.lambda_zip)
+
+  # Publishing a Reel means creating a media container and polling until Meta
+  # finishes processing it, which is slow and not under our control.
+  timeout     = 300
+  memory_size = 512
+
+  # Exactly one sweep at a time. publishOne is idempotent — it returns early on
+  # an already-PUBLISHED variant — so an overlap cannot double-post, but it can
+  # waste two sweeps racing on the same rows. One is simpler than reasoning
+  # about that.
+  reserved_concurrent_executions = 1
+
+  environment {
+    variables = {
+      STORE        = "dynamo"
+      DDB_TABLE    = aws_dynamodb_table.main.name
+      MEDIA_BUCKET = aws_s3_bucket.media.id
+      NODE_OPTIONS = "--enable-source-maps"
+      # No API key and no budget vars: publishing never calls the model. The
+      # agent writes the copy; this only delivers what a human already approved.
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.publisher]
+}
+
+# The heartbeat.
+#
+# Five minutes is the granularity of "scheduled for 11:00". It is also ~8,600
+# invocations a month, which is inside the free tier and costs nothing when
+# nothing is due — the sweep is a single indexed query returning no rows.
+resource "aws_cloudwatch_event_rule" "publish_sweep" {
+  name                = "${local.name}-publish-sweep"
+  description         = "Drains due post variants to their channels"
+  schedule_expression = var.sweep_schedule
+}
+
+resource "aws_cloudwatch_event_target" "publish_sweep" {
+  rule      = aws_cloudwatch_event_rule.publish_sweep.name
+  target_id = "publisher"
+  arn       = aws_lambda_function.publisher.arn
+}
+
+# EventBridge cannot invoke a function without being told it may. Without this
+# the rule fires on schedule, succeeds as far as EventBridge is concerned, and
+# nothing happens — a silent failure with no error anywhere.
+resource "aws_lambda_permission" "allow_eventbridge" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.publisher.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.publish_sweep.arn
 }
 
 # RESPONSE_STREAM is the whole point. Without it the Function URL buffers, and

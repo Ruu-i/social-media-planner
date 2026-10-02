@@ -3,6 +3,7 @@ import { api, type Account, type ContentItem, type MediaAsset, type PublishOutco
 import { Chat } from "./components/Chat";
 import { Calendar } from "./components/Calendar";
 import { MediaLibrary } from "./components/MediaLibrary";
+import { Accounts } from "./components/Accounts";
 import { AnimatedBackdrop } from "./ui";
 
 export default function App() {
@@ -11,6 +12,32 @@ export default function App() {
   const [items, setItems] = useState<ContentItem[]>([]);
   const [assets, setAssets] = useState<MediaAsset[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [showAccounts, setShowAccounts] = useState(false);
+  const [connectNotice, setConnectNotice] = useState<string | null>(null);
+  const [connectOk, setConnectOk] = useState(true);
+
+  /**
+   * The return leg of the OAuth round trip.
+   *
+   * The callback redirects here with ?connected=1, which is the only signal the
+   * SPA gets that a connection was made — it was a full page navigation, so all
+   * component state from before the redirect is gone. The query is cleared
+   * afterwards so reloading does not re-announce a connection.
+   */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get("connected");
+    if (!connected) return;
+
+    setConnectOk(connected === "1");
+    setConnectNotice(
+      connected === "1"
+        ? `Connected ${params.get("handle") ?? "your account"}`
+        : `Could not connect: ${params.get("reason") ?? "the request was declined"}`,
+    );
+    window.history.replaceState({}, "", window.location.pathname);
+    void refresh();
+  }, []);
   const [outcomes, setOutcomes] = useState<PublishOutcome[] | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
 
@@ -101,12 +128,27 @@ export default function App() {
                 <span className="text-stone-500">{a.handle}</span>
               </span>
             ))}
-            {needsReauth && (
-              <span className="rounded-md bg-rose-50 px-2 py-0.5 text-[11px] font-medium text-rose-700 ring-1 ring-rose-200 ring-inset">
-                Reconnect Meta
-              </span>
-            )}
           </div>
+
+          {/* An explicit, always-visible button.
+              Making the handle strip itself clickable was not enough: with any
+              account already present it rendered as plain text with no
+              affordance, so there was no visible way to connect anything. A
+              named button is findable whether or not something is connected. */}
+          <button
+            onClick={() => setShowAccounts(true)}
+            className={`rounded-lg px-3 py-1.5 text-[11px] font-medium shadow-sm transition ${
+              accounts.length === 0 || needsReauth
+                ? "bg-violet-600 text-white hover:bg-violet-700"
+                : "border border-stone-200 bg-white text-stone-600 hover:border-stone-300 hover:text-stone-900"
+            }`}
+          >
+            {accounts.length === 0
+              ? "Connect an account"
+              : needsReauth
+                ? "Reconnect"
+                : "Accounts"}
+          </button>
 
           {/* Stands in for the scheduler firing. Like Approve, it does not go
               through the agent — there is no publish tool. */}
@@ -122,6 +164,54 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* Connecting an account is the single most consequential thing a user
+          does here, and it finishes on a page they were redirected back to —
+          so the confirmation has to be unmissable. A thin 11px strip was being
+          read as chrome and skipped entirely. */}
+      {connectNotice && (
+        <div
+          className={`flex shrink-0 items-center gap-3 border-b px-5 py-3 ${
+            connectOk
+              ? "border-emerald-200 bg-emerald-50"
+              : "border-rose-200 bg-rose-50"
+          }`}
+        >
+          <span
+            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white ${
+              connectOk ? "bg-emerald-500" : "bg-rose-500"
+            }`}
+          >
+            {connectOk ? "✓" : "!"}
+          </span>
+          <div className="min-w-0">
+            <p
+              className={`text-[13px] font-semibold ${
+                connectOk ? "text-emerald-900" : "text-rose-900"
+              }`}
+            >
+              {connectNotice}
+            </p>
+            <p
+              className={`text-[11px] ${connectOk ? "text-emerald-700" : "text-rose-700"}`}
+            >
+              {connectOk
+                ? "The agent can now plan and publish to this account."
+                : "Nothing was changed. You can try connecting again."}
+            </p>
+          </div>
+          <button
+            onClick={() => setConnectNotice(null)}
+            className={`ml-auto shrink-0 rounded-lg px-2 py-1 transition ${
+              connectOk
+                ? "text-emerald-600 hover:bg-emerald-100"
+                : "text-rose-600 hover:bg-rose-100"
+            }`}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {outcomes && (
         <div className="flex shrink-0 items-center gap-3 border-b border-stone-200/80 bg-amber-50/60 px-5 py-1.5 text-[11px]">
@@ -205,6 +295,14 @@ export default function App() {
           )}
         </aside>
       </div>
+
+      {showAccounts && (
+        <Accounts
+          accounts={accounts}
+          onClose={() => setShowAccounts(false)}
+          onChanged={() => void refresh()}
+        />
+      )}
     </div>
   );
 }
