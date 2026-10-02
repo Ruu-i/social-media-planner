@@ -45,13 +45,12 @@ export const profile: BusinessProfile = {
 };
 
 /**
- * ONE Meta connection covering TWO channels.
+ * TWO connections, one channel each.
  *
- * This is how Meta actually works: a single OAuth grant returns access to an
- * Instagram Business account and the Facebook Page it is linked to. Modelling
- * it as one connection means an expired token correctly breaks both at once,
- * and the user is told to reconnect *Meta* rather than being sent round the
- * loop twice.
+ * This said "one Meta connection covering two channels", which is true only of
+ * Meta's Facebook Login path — and that path cannot reach Creator accounts at
+ * all. Instagram Login and Facebook Pages are separate grants, so they are
+ * separate connections, and one expiring no longer takes the other down.
  *
  * Note `tokenRef`: a pointer into a secret store, not a token. Nothing in this
  * process — and certainly nothing the agent can call — holds the real value.
@@ -112,16 +111,36 @@ export const seedChannels: Channel[] = [
   },
 ];
 
-/** Content already on the calendar, so the agent has something to plan around. */
+/**
+ * A seeded time, in the BUSINESS's timezone rather than the server's.
+ *
+ * `setHours` works in whatever zone the process happens to run in. Locally that
+ * is Colombo and the seed looked right; in Lambda it is UTC, so "18:00" became
+ * 18:00Z — which the UI correctly rendered as 23:30 for a coffee shop that
+ * closes at six. The data was never wrong, it was NAIVE, and the server's
+ * accidental timezone silently became part of it.
+ *
+ * The store already refuses datetimes without an offset for exactly this
+ * reason. The seed was writing through toISOString, which always produces one,
+ * so it satisfied the rule while still being wrong.
+ */
+function atColomboTime(day: Date, hour: number, minute = 0): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const date = `${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}`;
+  return `${date}T${pad(hour)}:${pad(minute)}:00+05:30`;
+}
+
 export function seedContent(): ContentItemWithVariants[] {
-  const monday = new Date();
-  monday.setDate(monday.getDate() + ((8 - monday.getDay()) % 7 || 7));
-  monday.setHours(18, 0, 0, 0);
+  const mondayDate = new Date();
+  mondayDate.setDate(mondayDate.getDate() + ((8 - mondayDate.getDay()) % 7 || 7));
+
   // A separate day, so the calendar shows two distinct groups rather than one
   // pile — which is also what makes the differing statuses legible side by side.
-  const saturday = new Date(monday);
-  saturday.setDate(saturday.getDate() + 5);
-  saturday.setHours(9, 0, 0, 0);
+  const saturdayDate = new Date(mondayDate);
+  saturdayDate.setDate(saturdayDate.getDate() + 5);
+
+  const monday = atColomboTime(mondayDate, 18);
+  const saturday = atColomboTime(saturdayDate, 9);
 
   const now = new Date().toISOString();
 
@@ -159,7 +178,7 @@ export function seedContent(): ContentItemWithVariants[] {
           id: "var_seed001a",
           channelId: "ch_ig001",
           platform: "instagram" as const,
-          scheduledFor: monday.toISOString(),
+          scheduledFor: monday,
           media: {
             format: "POST" as const,
             imageConcept: "Cold brew poured over a single large ice cube, shot close.",
@@ -178,7 +197,7 @@ export function seedContent(): ContentItemWithVariants[] {
           id: "var_seed001b",
           channelId: "ch_fb001",
           platform: "facebook" as const,
-          scheduledFor: monday.toISOString(),
+          scheduledFor: monday,
           media: {
             format: "POST" as const,
             imageConcept: "Cold brew poured over a single large ice cube, shot close.",
@@ -233,7 +252,7 @@ export function seedContent(): ContentItemWithVariants[] {
           id: "var_seed002a",
           channelId: "ch_ig001",
           platform: "instagram" as const,
-          scheduledFor: saturday.toISOString(),
+          scheduledFor: saturday,
           media: {
             format: "POST" as const,
             imageConcept: "The counter at 7am, steam and morning light, no people posing.",

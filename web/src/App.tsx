@@ -4,6 +4,7 @@ import { Chat } from "./components/Chat";
 import { Calendar } from "./components/Calendar";
 import { MediaLibrary } from "./components/MediaLibrary";
 import { Accounts } from "./components/Accounts";
+import { Tooltip } from "./components/Tooltip";
 import { AnimatedBackdrop } from "./ui";
 
 export default function App() {
@@ -15,6 +16,14 @@ export default function App() {
   const [showAccounts, setShowAccounts] = useState(false);
   const [connectNotice, setConnectNotice] = useState<string | null>(null);
   const [connectOk, setConnectOk] = useState(true);
+  /**
+   * A message the calendar wants the agent to receive.
+   *
+   * Lifted to App because the two panels are siblings: approving a post happens
+   * on the left and the agent lives on the right, and the whole point is that
+   * one leads to the other. Chat consumes it and clears it.
+   */
+  const [agentPrompt, setAgentPrompt] = useState<string | null>(null);
 
   /**
    * The return leg of the OAuth round trip.
@@ -125,7 +134,7 @@ export default function App() {
                     a.connectionStatus === "ACTIVE" ? "bg-emerald-500" : "bg-rose-500"
                   }`}
                 />
-                <span className="text-stone-500">{a.handle}</span>
+                <span className="font-medium text-stone-700">{a.handle}</span>
               </span>
             ))}
           </div>
@@ -135,33 +144,50 @@ export default function App() {
               account already present it rendered as plain text with no
               affordance, so there was no visible way to connect anything. A
               named button is findable whether or not something is connected. */}
-          <button
-            onClick={() => setShowAccounts(true)}
-            className={`rounded-lg px-3 py-1.5 text-[11px] font-medium shadow-sm transition ${
-              accounts.length === 0 || needsReauth
-                ? "bg-violet-600 text-white hover:bg-violet-700"
-                : "border border-stone-200 bg-white text-stone-600 hover:border-stone-300 hover:text-stone-900"
-            }`}
+          <Tooltip
+            text={
+              accounts.length === 0
+                ? "Connect Instagram so the agent can plan and publish for you."
+                : needsReauth
+                  ? "A connection expired. Reconnect it, or scheduled posts will not go out."
+                  : "The accounts the agent plans for. Connect or disconnect them here."
+            }
           >
-            {accounts.length === 0
-              ? "Connect an account"
-              : needsReauth
-                ? "Reconnect"
-                : "Accounts"}
-          </button>
+            <button
+              onClick={() => setShowAccounts(true)}
+              className={`rounded-lg px-3 py-1.5 text-[11px] font-medium shadow-sm transition ${
+                accounts.length === 0 || needsReauth
+                  ? "bg-violet-600 text-white hover:bg-violet-700"
+                  : "border border-stone-200 bg-white text-stone-600 hover:border-stone-300 hover:text-stone-900"
+              }`}
+            >
+              {accounts.length === 0
+                ? "Connect an account"
+                : needsReauth
+                  ? "Reconnect"
+                  : "Accounts"}
+            </button>
+          </Tooltip>
 
-          {/* Stands in for the scheduler firing. Like Approve, it does not go
-              through the agent — there is no publish tool. */}
-          <button
-            onClick={async () => {
-              const { outcomes } = await api.publishDue();
-              setOutcomes(outcomes);
-              void refresh();
-            }}
-            className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-medium text-stone-600 shadow-sm transition hover:border-stone-300 hover:text-stone-900"
-          >
-            Run publisher
-          </button>
+          {/* Runs the publish sweep immediately instead of waiting for the next
+              scheduled one.
+              It was called "Run publisher", which named an internal process
+              rather than an outcome — a user cannot be expected to know what a
+              publisher is, or that running one posts their content.
+              Like Approve, it does not go through the agent: there is no
+              publish tool, so no amount of prompting can reach this. */}
+          <Tooltip text="Posts anything whose scheduled time has already passed. This also happens automatically every few minutes, so you rarely need it.">
+            <button
+              onClick={async () => {
+                const { outcomes } = await api.publishDue();
+                setOutcomes(outcomes);
+                void refresh();
+              }}
+              className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-medium text-stone-600 shadow-sm transition hover:border-stone-300 hover:text-stone-900"
+            >
+              Publish due posts
+            </button>
+          </Tooltip>
         </div>
       </header>
 
@@ -215,9 +241,9 @@ export default function App() {
 
       {outcomes && (
         <div className="flex shrink-0 items-center gap-3 border-b border-stone-200/80 bg-amber-50/60 px-5 py-1.5 text-[11px]">
-          <span className="font-medium text-stone-700">Publisher</span>
+          <span className="font-medium text-stone-700">Publishing</span>
           {outcomes.length === 0 ? (
-            <span className="text-stone-500">nothing was due</span>
+            <span className="text-stone-500">nothing was due to post yet</span>
           ) : (
             outcomes.map((o) => (
               <span key={o.variantId} className="text-stone-500">
@@ -279,7 +305,12 @@ export default function App() {
             <AnimatedBackdrop />
             <div className="relative h-full overflow-y-auto">
               {tab === "calendar" ? (
-                <Calendar items={items} assets={assets} onChanged={refresh} />
+                <Calendar
+                  items={items}
+                  assets={assets}
+                  onChanged={refresh}
+                  onAskAgent={setAgentPrompt}
+                />
               ) : (
                 <MediaLibrary assets={assets} onChanged={refresh} />
               )}
@@ -289,7 +320,12 @@ export default function App() {
 
         <aside className="hidden w-[400px] shrink-0 border-l border-stone-200/80 lg:block">
           {sessionId ? (
-            <Chat sessionId={sessionId} onChanged={refresh} />
+            <Chat
+              sessionId={sessionId}
+              onChanged={refresh}
+              prompt={agentPrompt}
+              onPromptSent={() => setAgentPrompt(null)}
+            />
           ) : (
             <div className="p-4 text-sm text-stone-500">Starting session…</div>
           )}

@@ -23,10 +23,12 @@ export function Calendar({
   items,
   assets,
   onChanged,
+  onAskAgent,
 }: {
   items: ContentItem[];
   assets: MediaAsset[];
   onChanged: () => void;
+  onAskAgent: (text: string) => void;
 }) {
   const [filter, setFilter] = useState<Format | "ALL">("ALL");
 
@@ -118,7 +120,13 @@ export function Calendar({
 
             <div className="space-y-2">
               {dayItems.map((item) => (
-                <ItemCard key={item.id} item={item} assets={assets} onChanged={onChanged} />
+                <ItemCard
+                  key={item.id}
+                  item={item}
+                  assets={assets}
+                  onChanged={onChanged}
+                  onAskAgent={onAskAgent}
+                />
               ))}
             </div>
           </section>
@@ -160,10 +168,12 @@ function ItemCard({
   item,
   assets,
   onChanged,
+  onAskAgent,
 }: {
   item: ContentItem;
   assets: MediaAsset[];
   onChanged: () => void;
+  onAskAgent: (text: string) => void;
 }) {
   const unwritten = item.variants.length === 0 && item.plannedFor;
 
@@ -193,7 +203,14 @@ function ItemCard({
 
       <div className="divide-y divide-stone-100 border-t border-stone-100">
         {item.variants.map((v) => (
-          <VariantRow key={v.id} variant={v} assets={assets} onChanged={onChanged} />
+          <VariantRow
+            key={v.id}
+            variant={v}
+            assets={assets}
+            topic={item.topic}
+            onChanged={onChanged}
+            onAskAgent={onAskAgent}
+          />
         ))}
       </div>
     </article>
@@ -203,14 +220,19 @@ function ItemCard({
 function VariantRow({
   variant,
   assets,
+  topic,
   onChanged,
+  onAskAgent,
 }: {
   variant: Variant;
   assets: MediaAsset[];
+  topic: string;
   onChanged: () => void;
+  onAskAgent: (text: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [working, setWorking] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const used = variant.assetIds
@@ -234,7 +256,14 @@ function VariantRow({
 
   return (
     <div>
-      <div className="flex items-center gap-3 px-3.5 py-2.5">
+      {/* The whole row is the disclosure control, and it now LOOKS like one.
+          It was already clickable, with nothing to say so: no chevron, no hover
+          state, no cursor change. Everything behind it — the full caption, the
+          media plan, Approve and Cancel — was reachable only by guessing. */}
+      <div
+        onClick={() => setOpen((o) => !o)}
+        className="flex cursor-pointer items-center gap-3 px-3.5 py-2.5 transition hover:bg-stone-50/80"
+      >
         {/* A thumbnail gives the row visual weight and answers the question that
             matters at a glance: is this written about a photo that exists? */}
         {used[0] ? (
@@ -243,10 +272,7 @@ function VariantRow({
           <div className="h-[38px] w-[38px] shrink-0 rounded-lg border border-dashed border-stone-200" />
         )}
 
-        <button
-          onClick={() => setOpen((o) => !o)}
-          className="flex min-w-0 flex-1 flex-col items-start gap-1 text-left"
-        >
+        <div className="flex min-w-0 flex-1 flex-col items-start gap-1 text-left">
           <span className="flex items-center gap-2">
             <PlatformBadge platform={variant.platform} />
             <FormatTag format={variant.media.format} />
@@ -257,7 +283,7 @@ function VariantRow({
           <span className="line-clamp-1 text-[13px] text-stone-700">
             {variant.hook}
           </span>
-        </button>
+        </div>
 
         <StatusPill status={variant.status} />
 
@@ -265,13 +291,51 @@ function VariantRow({
             no tool the agent has can reach it. */}
         {canApprove && (
           <button
-            onClick={() => act(() => api.approve(variant.id))}
+            onClick={(e) => {
+              // Stop the row's toggle firing too — approving should not also
+              // collapse what you were reading.
+              e.stopPropagation();
+              void act(() => api.approve(variant.id));
+            }}
             disabled={working}
             className="shrink-0 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-40"
           >
             Approve
           </button>
         )}
+
+        {/* The affordance. Without it the row is a wall of text that happens to
+            react to clicks — a chevron is the one convention everyone already
+            reads as "there is more underneath". */}
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-label={open ? "Hide details" : "Show details"}
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen((o) => !o);
+          }}
+          className="flex shrink-0 items-center rounded-lg p-1.5 text-violet-600 transition hover:bg-violet-50 hover:text-violet-700"
+        >
+          {/* Violet, not grey. The chevron is the only thing telling a user
+              there is anything behind the row, so it has to read as
+              interactive — and violet is already the app's action colour
+              (Connect, Ask the agent), so it says "clickable" without
+              introducing a new convention. The label is gone: the chevron is
+              universally understood, and the text was competing with the
+              status pill beside it. */}
+          <svg
+            viewBox="0 0 20 20"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={`h-4 w-4 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+          >
+            <path d="M5 7.5 10 12.5 15 7.5" />
+          </svg>
+        </button>
       </div>
 
       {error && <p className="px-3.5 pb-2 text-[11px] text-rose-600">{error}</p>}
@@ -336,7 +400,16 @@ function VariantRow({
 
             {(variant.status === "PENDING_APPROVAL" || variant.status === "DRAFT") && (
               <button
-                onClick={() => act(() => api.approve(variant.id))}
+                onClick={async () => {
+                  await act(() => api.approve(variant.id));
+                  // Hand the user straight to the next step. Approval is a
+                  // dead end otherwise: the status changes, nothing else
+                  // happens, and the post quietly never goes out.
+                  onAskAgent(
+                    `I approved the ${variant.platform} post for "${topic}". ` +
+                      `Please schedule it.`,
+                  );
+                }}
                 disabled={working}
                 className="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-40"
               >
@@ -344,14 +417,59 @@ function VariantRow({
               </button>
             )}
 
-            {variant.status !== "PUBLISHED" && variant.status !== "CANCELLED" && (
+            {variant.status === "APPROVED" && (
               <button
-                onClick={() => act(() => api.cancel(variant.id))}
-                disabled={working}
-                className="ml-auto text-[11px] text-stone-400 underline transition hover:text-rose-600"
+                onClick={() =>
+                  onAskAgent(
+                    `Schedule the approved ${variant.platform} post for "${topic}".`,
+                  )
+                }
+                className="rounded-lg bg-violet-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-violet-500"
               >
-                Cancel this version
+                Ask the agent to schedule it
               </button>
+            )}
+
+            {variant.status !== "PUBLISHED" && variant.status !== "CANCELLED" && (
+              <div className="ml-auto flex items-center gap-2">
+                {/* Two steps, not a browser confirm().
+                    A scheduled post is a commitment the user made deliberately,
+                    and one stray click should not undo it — but window.confirm
+                    is an OS dialog that cannot say WHICH post, and people
+                    dismiss it reflexively. An inline confirm names the stake
+                    and stays in the row it belongs to. */}
+                {confirming ? (
+                  <>
+                    <span className="text-[11px] text-stone-600">
+                      Stop this from posting?
+                    </span>
+                    <button
+                      onClick={async () => {
+                        setConfirming(false);
+                        await act(() => api.cancel(variant.id));
+                      }}
+                      disabled={working}
+                      className="rounded-lg bg-rose-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-rose-500 disabled:opacity-40"
+                    >
+                      Yes, cancel it
+                    </button>
+                    <button
+                      onClick={() => setConfirming(false)}
+                      className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-medium text-stone-600 transition hover:border-stone-300"
+                    >
+                      Keep it
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => setConfirming(true)}
+                    disabled={working}
+                    className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-medium text-stone-600 transition hover:border-rose-200 hover:text-rose-600 disabled:opacity-40"
+                  >
+                    Cancel this post
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -374,7 +492,10 @@ function lifecycleOf(v: Variant): string {
     case "PENDING_APPROVAL":
       return "Waiting for you. Nothing is scheduled until you approve it.";
     case "APPROVED":
-      return "You approved this. The agent can now schedule it.";
+      // Explicit that this is NOT done. Approval unlocks scheduling; it does
+      // not schedule. Without saying so, an approved post looks finished and
+      // silently never goes out.
+      return "You approved this. It will NOT post until it is scheduled.";
     case "SCHEDULED":
       return `Approved and scheduled. It posts automatically at ${formatTime(v.scheduledFor)}.`;
     case "PUBLISHED":
@@ -382,7 +503,11 @@ function lifecycleOf(v: Variant): string {
     case "FAILED":
       return "Publishing failed. Nothing was posted.";
     case "CANCELLED":
-      return "Cancelled. It will not be posted.";
+      // Cancelled, not deleted. The row stays so the calendar remains a record
+      // of what was planned and what was called off — which matters when the
+      // agent reads the calendar back and would otherwise re-suggest the very
+      // thing the user just rejected.
+      return "Cancelled. It will not be posted, and stays here as a record.";
   }
 }
 

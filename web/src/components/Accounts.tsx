@@ -87,7 +87,7 @@ export function Accounts({
         <div className="flex items-center justify-between border-b border-stone-100 px-5 py-4">
           <div>
             <h2 className="text-sm font-semibold text-stone-900">Connected accounts</h2>
-            <p className="mt-0.5 text-[11px] text-stone-500">
+            <p className="mt-0.5 text-[11px] text-stone-600">
               The agent plans for these. Nothing publishes without your approval.
             </p>
           </div>
@@ -137,7 +137,7 @@ export function Accounts({
                       />
                     )}
                   </div>
-                  <p className="mt-0.5 truncate text-[11px] text-stone-500">
+                  <p className="mt-0.5 truncate text-[11px] text-stone-600">
                     {connection
                       ? connection.status === "ACTIVE"
                         ? channels.map((c) => c.handle).join(", ") || "Connected"
@@ -160,7 +160,7 @@ export function Accounts({
                       <button
                         disabled={busy === connection.id}
                         onClick={() => void disconnect(connection)}
-                        className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-medium text-stone-500 transition hover:border-rose-200 hover:text-rose-600 disabled:opacity-50"
+                        className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-medium text-stone-600 transition hover:border-rose-200 hover:text-rose-600 disabled:opacity-50"
                       >
                         {busy === connection.id ? "…" : "Disconnect"}
                       </button>
@@ -184,14 +184,14 @@ export function Accounts({
           })}
 
           {connections.some((c) => c.status === "ACTIVE") && (
-            <p className="pt-1 text-[11px] text-stone-400">
+            <p className="pt-1 text-[11px] text-stone-600">
               To use a different account, disconnect first, then connect again.
             </p>
           )}
 
           {/* Stated rather than hidden: a Facebook button that cannot work is
               worse than an honest explanation of why it is not there. */}
-          <p className="pt-2 text-[11px] leading-relaxed text-stone-400">
+          <p className="pt-2 text-[11px] leading-relaxed text-stone-600">
             Instagram needs a Business or Creator account — personal accounts cannot be published
             to through any API. Facebook posting needs a Page you administer, and is coming next.
           </p>

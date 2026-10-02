@@ -30,7 +30,18 @@ const PROMPTS = [
   "Push everything back a week",
 ];
 
-export function Chat({ sessionId, onChanged }: { sessionId: string; onChanged: () => void }) {
+export function Chat({
+  sessionId,
+  onChanged,
+  prompt,
+  onPromptSent,
+}: {
+  sessionId: string;
+  onChanged: () => void;
+  /** A message pushed in from elsewhere in the app — see App's agentPrompt. */
+  prompt?: string | null;
+  onPromptSent?: () => void;
+}) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -47,6 +58,21 @@ export function Chat({ sessionId, onChanged }: { sessionId: string; onChanged: (
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   }, [entries, phase]);
+
+  /**
+   * Send a prompt handed in from another panel.
+   *
+   * Cleared immediately via onPromptSent so the same message cannot fire twice
+   * on a re-render. Skipped while a turn is in flight rather than queued: two
+   * overlapping turns on one session would interleave in the conversation
+   * store, and the user can simply press the button again.
+   */
+  useEffect(() => {
+    if (!prompt || busy) return;
+    send(prompt);
+    onPromptSent?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prompt]);
 
   // A clock that keeps moving even when no events arrive — which is exactly
   // when a user would otherwise assume the thing has hung.
