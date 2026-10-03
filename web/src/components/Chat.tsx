@@ -154,6 +154,27 @@ export function Chat({
 
     const append = (entry: Entry) => setEntries((e) => [...e, entry]);
 
+    // Ask the guard first. A refusal on the stream itself comes back as a 429,
+    // which EventSource reports as an unexplained connection failure — so the
+    // user saw "Connection to the server was lost" when nothing was lost and
+    // the real answer was "you have used your turns for this hour".
+    void api
+      .turnAllowed()
+      .then((decision) => {
+        if (decision.allowed) return startStream();
+        append({
+          kind: "error",
+          text:
+            decision.reason ??
+            `Spending limit reached ($${decision.spentUsd.toFixed(2)} of $${decision.budgetUsd.toFixed(2)}). Everything except the agent still works.`,
+        });
+        setBusy(false);
+        setPhase(null);
+      })
+      .catch(() => startStream());
+
+    function startStream() {
+
     const handlers: StreamHandlers = {
       onTool: (name) => {
         setPhase("thinking");
@@ -198,6 +219,7 @@ export function Chat({
       handlers,
       sending.map((a) => a.assetId),
     );
+    }
   }
 
   return (

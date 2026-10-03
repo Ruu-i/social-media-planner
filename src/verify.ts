@@ -60,17 +60,37 @@ const future = (days = 1) => new Date(Date.now() + days * 86_400_000).toISOStrin
 const IG = "ch_ig001";
 const FB = "ch_fb001";
 
-const variant = (over: Partial<VariantDraft> = {}): VariantDraft => ({
-  channelId: IG,
-  assetIds: [],
-  scheduledFor: future(),
-  media: { format: "POST", imageConcept: "A grinder." },
-  hook: "Your grinder matters more than your beans.",
-  caption: "Short caption.",
-  hashtags: ["coffee"],
-  callToAction: "Try it.",
-  ...over,
-});
+/**
+ * A seeded asset whose SHAPE fits the format.
+ *
+ * Reels and Stories are vertical surfaces and the store refuses a square photo
+ * in either — correctly. So the default asset has to follow the format rather
+ * than being one fixed id, or half these fixtures fail validation for a reason
+ * that has nothing to do with what they are testing.
+ */
+const assetFor = (format: string): string[] =>
+  format === "REEL"
+    ? ["asset_firstcrack01"]
+    : format === "STORY"
+      ? ["asset_latteart01"]
+      : ["asset_pour01"];
+
+const variant = (over: Partial<VariantDraft> = {}): VariantDraft => {
+  const merged = {
+    channelId: IG,
+    scheduledFor: future(),
+    media: { format: "POST", imageConcept: "A grinder." },
+    hook: "Your grinder matters more than your beans.",
+    caption: "Short caption.",
+    hashtags: ["coffee"],
+    callToAction: "Try it.",
+    ...over,
+  } as VariantDraft;
+
+  // Media by default: Instagram cannot publish text, so a variant without it is
+  // not schedulable, and most assertions here are about what happens after.
+  return { ...merged, assetIds: over.assetIds ?? assetFor(merged.media.format) };
+};
 
 const item = (over: Partial<ContentItemDraft> = {}): ContentItemDraft => ({
   topic: "Grinder basics",
@@ -1205,6 +1225,34 @@ try {
       globalThis.fetch = realFetch;
     }
   }
+}
+
+
+// A post that cannot possibly publish must be refused when it is committed to a
+// time, not discovered at the moment it was due.
+{
+  const [noMedia] = await store.createContent(USER_ID, [
+    item({ variants: [variant({ assetIds: [] })] }),
+  ]);
+  const v = noMedia!.variants[0]!;
+  await store.humanApprove(USER_ID, v.id);
+  try {
+    await store.scheduleVariant(USER_ID, v.id, future(), "key-nomedia");
+    check("an Instagram post with no media cannot be scheduled", false, "it succeeded!");
+  } catch (e) {
+    check(
+      "an Instagram post with no media cannot be scheduled",
+      e instanceof StoreError && e.code === "INVALID_STATE" && /no photo or video/i.test(e.message),
+      e instanceof StoreError ? e.message : String(e),
+    );
+  }
+
+  // A draft without media is fine — it is only committing it to a time that is
+  // broken, so creation must stay permissive.
+  check(
+    "a draft with no media is still allowed to exist",
+    (await store.getVariant(USER_ID, v.id)).assetIds.length === 0,
+  );
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed  (store: ${STORE_KIND})\n`);

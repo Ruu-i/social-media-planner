@@ -131,7 +131,14 @@ export function AnimatedBackdrop() {
 export function formatTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  // 12-hour with AM/PM. "13:15" is unambiguous but takes a beat to read, and
+  // people schedule posts in the language they think in — "quarter past one in
+  // the afternoon", not "thirteen fifteen".
+  return d.toLocaleString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
 }
 
 export function formatDayLabel(iso: string): string {

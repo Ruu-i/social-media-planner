@@ -131,6 +131,34 @@ export function assertSchedulable(status: Status, variantId: string): void {
   }
 }
 
+/**
+ * Instagram cannot publish text. Refuse to SCHEDULE something that cannot post.
+ *
+ * This exists because of a real failure: the agent was handed a photo, wrote a
+ * caption describing it, and saved the variant with an empty assetIds — so a
+ * post that read perfectly was scheduled to publish with no image. Nothing
+ * caught it, because every check that mattered ran at publish time. The user
+ * would have found out when the notification said it failed, at the moment it
+ * was supposed to go out.
+ *
+ * Checked at scheduling rather than at creation: a draft without a photo yet is
+ * a perfectly reasonable work in progress. Committing it to a time is the point
+ * at which "no image" stops being incomplete and starts being broken.
+ */
+export function assertPublishable(
+  platform: string,
+  assetIds: string[],
+  variantId: string,
+): void {
+  if (platform === "instagram" && assetIds.length === 0) {
+    throw new StoreError(
+      `Variant ${variantId} has no photo or video attached. Instagram cannot publish ` +
+        `text on its own, so this would fail at the moment it was due. Attach media first.`,
+      "INVALID_STATE",
+    );
+  }
+}
+
 export function assertFutureTime(scheduledFor: string): void {
   assertHasOffset(scheduledFor);
   if (new Date(scheduledFor).getTime() <= Date.now()) {

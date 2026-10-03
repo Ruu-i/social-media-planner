@@ -8,6 +8,7 @@ import {
   assertAgentTransition,
   assertFutureTime,
   assertHasOffset,
+  assertPublishable,
   assertSchedulable,
   assertVariantValid,
   approvalSurvives,
@@ -334,13 +335,12 @@ export class MemoryStore implements ContentStore {
 
     const variant = await this.getVariant(userId, variantId);
 
-    if (variant.status !== "APPROVED") {
-      throw new StoreError(
-        `Variant ${variantId} is ${variant.status}. Only APPROVED variants can be ` +
-          `scheduled — a human must approve it first.`,
-        "INVALID_STATE",
-      );
-    }
+    // These were an INLINE COPY of the approval check, which is the drift
+    // rules.ts exists to prevent — and it showed: a new rule added to the
+    // shared file silently did not apply here, so the two stores disagreed
+    // about what could be scheduled.
+    assertSchedulable(variant.status, variantId);
+    assertPublishable(variant.platform, variant.assetIds, variantId);
 
     const publishable = await this.connections.isPublishable(userId, variant.channelId);
     if (!publishable.ok) {

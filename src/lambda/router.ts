@@ -165,6 +165,19 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
       });
     }
 
+    // Asked BEFORE the stream is opened.
+    //
+    // A refusal on the stream route is a 429, and EventSource cannot read a
+    // non-200 body — it reports an opaque connection failure. So a rate-limited
+    // user was told "Connection to the server was lost", which is both wrong
+    // and unactionable: nothing is broken, they have simply used their turns.
+    //
+    // Unlike /api/budget this applies the PER-CLIENT hourly limit too, which is
+    // the one people actually hit.
+    if (method === "GET" && path === "/api/turn-allowed") {
+      return json(200, await spendGuard.check(clientIdOf(event)));
+    }
+
     if (method === "GET" && path === "/api/budget") {
       return json(200, await spendGuard.status());
     }
@@ -198,6 +211,11 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
       const changes: Record<string, unknown> = {};
       if (typeof body.caption === "string") changes.caption = body.caption;
       if (typeof body.callToAction === "string") changes.callToAction = body.callToAction;
+      if (Array.isArray(body.assetIds)) {
+        changes.assetIds = (body.assetIds as unknown[]).filter(
+          (a): a is string => typeof a === "string",
+        );
+      }
       if (Array.isArray(body.hashtags)) {
         changes.hashtags = (body.hashtags as unknown[])
           .filter((h): h is string => typeof h === "string")

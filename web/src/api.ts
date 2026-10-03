@@ -184,6 +184,12 @@ export const api = {
   publishDue: () =>
     fetch(apiUrl("/api/publish/run"), { method: "POST" }).then(json<{ outcomes: PublishOutcome[] }>),
 
+  /** Whether a turn is allowed right now — budget AND hourly rate limit. */
+  turnAllowed: () =>
+    fetch(apiUrl("/api/turn-allowed")).then(
+      json<{ allowed: boolean; reason?: string; spentUsd: number; budgetUsd: number }>,
+    ),
+
   connections: () =>
     fetch(apiUrl("/api/connections")).then(
       json<{ connections: Connection[]; providers: ProviderStatus[] }>,
@@ -251,6 +257,8 @@ export function streamTurn(
   // answers unknown paths with index.html, so EventSource would fail on HTML
   // where every other request succeeded. Locally it worked, because Vite's proxy
   // makes relative and absolute the same thing.
+  // Preflight the guard before opening the stream, so a refusal arrives as a
+  // readable reason instead of an opaque EventSource error.
   const source = new EventSource(apiUrl(path));
 
   source.addEventListener("tool", (e) =>

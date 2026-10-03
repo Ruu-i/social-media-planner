@@ -236,6 +236,7 @@ function VariantRow({
   const [editing, setEditing] = useState(false);
   const [draftCaption, setDraftCaption] = useState(variant.caption);
   const [draftTags, setDraftTags] = useState(variant.hashtags.join(" "));
+  const [revision, setRevision] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const used = variant.assetIds
@@ -282,6 +283,18 @@ function VariantRow({
             <span className="text-[11px] tabular-nums text-stone-400">
               {formatTime(variant.scheduledFor)}
             </span>
+
+            {/* Which photo, by name. The thumbnail shows WHAT it looks like;
+                the name is how the user refers to it and what they recognise
+                when several shots look alike. An empty space here now also
+                means something specific: no media attached. */}
+            {used[0] ? (
+              <span className="max-w-32 truncate text-[11px] text-stone-500">
+                {used[0].filename || used[0].assetId}
+              </span>
+            ) : (
+              <span className="text-[11px] font-medium text-amber-700">no photo</span>
+            )}
           </span>
           <span className="line-clamp-1 text-[13px] text-stone-700">
             {variant.hook}
@@ -410,6 +423,55 @@ function VariantRow({
                     Discard
                   </button>
                 </div>
+
+                {/* The second mechanism, offered WITHIN the task rather than
+                    before it.
+                    Presenting "edit yourself or ask the AI?" as a choice up
+                    front demands a decision the user cannot make informed —
+                    they usually do not know whether it is a two-word fix or a
+                    rewrite until they are looking at the words. So the cheap,
+                    instant, exact option is the one their hands are already on,
+                    and the model is right here when typing is not what they
+                    want. */}
+                <div className="border-t border-stone-200 pt-2.5">
+                  <label className="text-[11px] text-stone-500">
+                    Or describe the change and let the agent write it
+                  </label>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <input
+                      value={revision}
+                      onChange={(e) => setRevision(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && revision.trim()) {
+                          e.preventDefault();
+                          onAskAgent(
+                            `Revise the ${variant.platform} post for "${topic}": ${revision.trim()}`,
+                          );
+                          setRevision("");
+                          setEditing(false);
+                        }
+                      }}
+                      placeholder="make it shorter, less salesy, mention the weekend…"
+                      className="flex-1 rounded-lg border border-stone-300 bg-white px-2.5 py-1.5 text-[11px] text-stone-800 outline-none placeholder:text-stone-400 focus:border-violet-400"
+                    />
+                    <button
+                      disabled={!revision.trim()}
+                      onClick={() => {
+                        onAskAgent(
+                          `Revise the ${variant.platform} post for "${topic}": ${revision.trim()}`,
+                        );
+                        setRevision("");
+                        setEditing(false);
+                      }}
+                      className="shrink-0 rounded-lg border border-violet-300 bg-white px-3 py-1.5 text-[11px] font-medium text-violet-700 transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-stone-200 disabled:text-stone-400"
+                    >
+                      Ask agent
+                    </button>
+                  </div>
+                  <p className="mt-1 text-[10px] text-stone-400">
+                    Takes about a minute and uses your API credit. Typing it yourself is free.
+                  </p>
+                </div>
               </div>
             ) : (
               <>
@@ -490,19 +552,6 @@ function VariantRow({
                 className="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-40"
               >
                 Approve this version
-              </button>
-            )}
-
-            {!editing && (
-              <button
-                onClick={() =>
-                  onAskAgent(
-                    `Revise the ${variant.platform} post for "${topic}" — `,
-                  )
-                }
-                className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-medium text-stone-600 transition hover:border-violet-300 hover:text-violet-700"
-              >
-                Ask the agent to revise
               </button>
             )}
 

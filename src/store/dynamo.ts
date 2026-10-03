@@ -28,6 +28,7 @@ import {
   assertAgentTransition,
   assertFutureTime,
   assertHasOffset,
+  assertPublishable,
   assertSchedulable,
   assertVariantValid,
   StoreError,
@@ -386,6 +387,7 @@ export class DynamoStore implements ContentStore {
 
     const variant = await this.getVariant(userId, variantId);
     assertSchedulable(variant.status, variantId);
+    assertPublishable(variant.platform, variant.assetIds, variantId);
 
     const publishable = await this.connections.isPublishable(userId, variant.channelId);
     if (!publishable.ok) {

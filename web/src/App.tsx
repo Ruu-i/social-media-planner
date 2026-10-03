@@ -149,7 +149,11 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col text-stone-900">
-      <header className="flex shrink-0 items-center gap-4 border-b border-stone-200/80 bg-white/80 px-5 py-2.5 backdrop-blur-sm">
+      {/* relative z-50 so the notification dropdown paints ABOVE the calendar.
+          backdrop-blur creates a stacking context, which traps the panel's own
+          z-50 inside the header — and the main content, being later in the DOM,
+          then covered it. */}
+      <header className="relative z-50 flex shrink-0 items-center gap-4 border-b border-stone-200/80 bg-white/80 px-5 py-2.5 backdrop-blur-sm">
         <div className="flex items-center gap-2.5">
           {/* A warm mark rather than a cool one — the accent through the whole
               app is amber, which sits with the coffee photography instead of
