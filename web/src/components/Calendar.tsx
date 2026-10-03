@@ -69,6 +69,34 @@ export function Calendar({
     const key = dayKey(when);
     groups.set(key, [...(groups.get(key) ?? []), item]);
   }
+  /**
+   * Within a day, work that needs you comes before work that is finished.
+   *
+   * Strict chronology is the obvious ordering for a calendar and the wrong one
+   * here: a post published at 1:25 is history, and a draft awaiting approval at
+   * 3:00 is the only thing on the screen the user can act on. Burying the
+   * second under the first means the newest plan appears below something that
+   * already happened.
+   *
+   * Time still decides within each group, so the day reads chronologically
+   * wherever the status is the same.
+   */
+  const attention = (item: ContentItem): number => {
+    const statuses = item.variants.map((v) => v.status);
+    if (statuses.some((s) => s === "PENDING_APPROVAL" || s === "DRAFT")) return 0;
+    if (statuses.some((s) => s === "APPROVED")) return 1;
+    if (statuses.some((s) => s === "FAILED")) return 2;
+    if (statuses.some((s) => s === "SCHEDULED")) return 3;
+    return 4; // published, cancelled — done with
+  };
+
+  const timeOf = (item: ContentItem): string =>
+    item.variants[0]?.scheduledFor ?? item.plannedFor ?? "";
+
+  for (const [, dayItems] of groups) {
+    dayItems.sort((a, b) => attention(a) - attention(b) || timeOf(a).localeCompare(timeOf(b)));
+  }
+
   const days = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
 
   return (
@@ -237,6 +265,7 @@ function VariantRow({
   const [draftCaption, setDraftCaption] = useState(variant.caption);
   const [draftTags, setDraftTags] = useState(variant.hashtags.join(" "));
   const [revision, setRevision] = useState("");
+  const [slot, setSlot] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const used = variant.assetIds
@@ -256,7 +285,21 @@ function VariantRow({
     }
   }
 
-  const canApprove = variant.status === "PENDING_APPROVAL" || variant.status === "DRAFT";
+  /**
+   * Approving something that cannot publish wastes the approval.
+   *
+   * The agent saved this Reel with no asset attached, the user approved it, the
+   * agent then fixed its own omission — and attaching media is a content
+   * change, so the approval was revoked and had to be given twice. The second
+   * approval was not the bug. Letting the first one happen was: they approved a
+   * post that would have failed at 3:00 PM with nothing to publish.
+   *
+   * The store already refuses to SCHEDULE media-less Instagram content. This is
+   * the same rule, moved to where the user can see it before acting.
+   */
+  const missingMedia = variant.platform === "instagram" && variant.assetIds.length === 0;
+  const canApprove =
+    (variant.status === "PENDING_APPROVAL" || variant.status === "DRAFT") && !missingMedia;
 
   return (
     <div>
@@ -288,13 +331,23 @@ function VariantRow({
                 the name is how the user refers to it and what they recognise
                 when several shots look alike. An empty space here now also
                 means something specific: no media attached. */}
+            {/* Three states, not two.
+                "no media" is only true when assetIds is EMPTY. A populated
+                assetIds that cannot be resolved means the library has not
+                loaded yet — claiming the post has no photo then is a lie that
+                sent the user looking for a bug that was not there. */}
             {used[0] ? (
               <span className="max-w-32 truncate text-[11px] text-stone-500">
+                {used[0].kind === "VIDEO" ? "▶ " : ""}
                 {used[0].filename || used[0].assetId}
               </span>
-            ) : (
-              <span className="text-[11px] font-medium text-amber-700">no photo</span>
-            )}
+            ) : variant.assetIds.length === 0 ? (
+              <span className="text-[11px] font-medium text-amber-700">
+                {variant.media.format === "REEL" || variant.media.format === "STORY"
+                  ? "no video"
+                  : "no photo"}
+              </span>
+            ) : null}
           </span>
           <span className="line-clamp-1 text-[13px] text-stone-700">
             {variant.hook}
@@ -536,7 +589,15 @@ function VariantRow({
           <div className="flex flex-wrap items-center gap-2 border-t border-stone-200/70 pt-3">
             <span className="text-[11px] text-stone-500">{lifecycleOf(variant)}</span>
 
-            {(variant.status === "PENDING_APPROVAL" || variant.status === "DRAFT") && (
+            {missingMedia &&
+              (variant.status === "PENDING_APPROVAL" || variant.status === "DRAFT") && (
+                <span className="text-[11px] font-medium text-amber-700">
+                  Attach a {variant.media.format === "REEL" ? "video" : "photo"} before approving —
+                  Instagram cannot publish text on its own.
+                </span>
+              )}
+
+            {canApprove && (
               <button
                 onClick={async () => {
                   await act(() => api.approve(variant.id));
@@ -555,17 +616,32 @@ function VariantRow({
               </button>
             )}
 
+            {/* Schedule it YOURSELF.
+                This was agent-only, which made committing a post to a time
+                depend on the model choosing schedule_variant over
+                update_variant. It chose wrong, set the time, left the status
+                APPROVED and said "Scheduled" — so the post would never have
+                gone out and nothing anywhere said so.
+                Approve and publish already bypass the model for exactly this
+                reason. This was the one decision left behind. */}
             {variant.status === "APPROVED" && (
-              <button
-                onClick={() =>
-                  onAskAgent(
-                    `Schedule the approved ${variant.platform} post for "${topic}".`,
-                  )
-                }
-                className="rounded-lg bg-violet-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-violet-500"
-              >
-                Ask the agent to schedule it
-              </button>
+              <>
+                <input
+                  type="datetime-local"
+                  value={slotFor(variant.scheduledFor)}
+                  onChange={(e) => setSlot(e.target.value)}
+                  className="rounded-lg border border-stone-300 bg-white px-2 py-1.5 text-[11px] text-stone-800 outline-none focus:border-violet-400"
+                />
+                <button
+                  disabled={working}
+                  onClick={() =>
+                    act(() => api.schedule(variant.id, withOffset(slot || slotFor(variant.scheduledFor))))
+                  }
+                  className="rounded-lg bg-violet-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-violet-500 disabled:opacity-40"
+                >
+                  Schedule it
+                </button>
+              </>
             )}
 
             {variant.status !== "PUBLISHED" && variant.status !== "CANCELLED" && (
@@ -647,6 +723,30 @@ function lifecycleOf(v: Variant): string {
       // thing the user just rejected.
       return "Cancelled. It will not be posted, and stays here as a record.";
   }
+}
+
+/** An ISO instant as the local "YYYY-MM-DDTHH:mm" a datetime-local input wants. */
+function slotFor(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * Put the browser's offset back on.
+ *
+ * A datetime-local value has NO timezone — it is wall-clock text. The store
+ * refuses offset-less datetimes precisely so a time can never be stored meaning
+ * whatever the server's clock happened to be, so the offset has to be attached
+ * here, where the user's intent actually lives.
+ */
+function withOffset(local: string): string {
+  const d = new Date(local);
+  const mins = -d.getTimezoneOffset();
+  const sign = mins >= 0 ? "+" : "-";
+  const pad = (n: number) => String(Math.floor(Math.abs(n))).padStart(2, "0");
+  return `${local}:00${sign}${pad(mins / 60)}:${pad(mins % 60)}`;
 }
 
 function mediaLine(v: Variant): string {

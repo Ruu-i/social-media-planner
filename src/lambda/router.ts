@@ -275,6 +275,27 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
       return json(200, { variant: await store.updateVariant(USER_ID, edit[1]!, changes) });
     }
 
+    // Scheduling, without the agent.
+    //
+    // Approve and publish already bypass the model because they are decisions a
+    // human makes. Scheduling is the same kind of decision and was the one left
+    // behind — so committing a post to a time depended on the agent choosing
+    // schedule_variant over update_variant. It chose wrong, set the time, left
+    // the status APPROVED, and reported success. The post would simply never
+    // have gone out.
+    const schedule = /^\/api\/variants\/([^/]+)\/schedule$/.exec(path);
+    if (method === "POST" && schedule) {
+      const body = bodyOf(event);
+      const when = typeof body.scheduledFor === "string" ? body.scheduledFor : "";
+      if (!when) {
+        return json(400, { error: "INVALID_INPUT", message: "scheduledFor is required" });
+      }
+      const variantId = schedule[1]!;
+      return json(200, {
+        variant: await store.scheduleVariant(USER_ID, variantId, when, `ui-${variantId}-${when}`),
+      });
+    }
+
     const cancel = /^\/api\/variants\/([^/]+)\/cancel$/.exec(path);
     if (method === "POST" && cancel) {
       return json(200, { variant: await store.cancelVariant(USER_ID, cancel[1]!) });

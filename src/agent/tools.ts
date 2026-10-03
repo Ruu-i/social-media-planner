@@ -65,6 +65,36 @@ function ok(data: unknown): string {
   return JSON.stringify({ ok: true, ...(data as object) });
 }
 
+/**
+ * Things the model needs to be TOLD, not reminded of.
+ *
+ * Three real failures in one afternoon, all tool-use errors rather than system
+ * faults: a post saved with no media (twice), and a time set with
+ * update_variant while the model announced it had scheduled it. Every one was
+ * invisible until publish time.
+ *
+ * A prompt asking it to remember is the weakest available fix — it competes
+ * with everything else in a long context. A warning in the tool RESULT arrives
+ * at the moment of the mistake, in the model's own working memory, and it
+ * corrects itself inside the same turn.
+ */
+function mediaWarning(
+  variants: { variantId: string; platform: string; assetIds?: string[] }[],
+): string | undefined {
+  const missing = variants.filter(
+    (v) => v.platform === "instagram" && (v.assetIds?.length ?? 0) === 0,
+  );
+  if (missing.length === 0) return undefined;
+
+  return (
+    `NOT PUBLISHABLE: ${missing.map((v) => v.variantId).join(", ")} ` +
+    `${missing.length === 1 ? "has" : "have"} no assetIds. Instagram cannot publish text on ` +
+    `its own, so this cannot be approved or scheduled and would fail at its slot. If the ` +
+    `user attached media, put its id in assetIds now with update_variant. If there is no ` +
+    `media yet, say so plainly rather than leaving the post looking finished.`
+  );
+}
+
 export function createTools(store: ContentStore, session: Session, deps: ToolDeps = {}) {
   const { userId } = session;
 
@@ -193,6 +223,13 @@ export function createTools(store: ContentStore, session: Session, deps: ToolDep
     run: async (args) => {
       try {
         const created = await store.createContent(userId, args.items);
+        const saved = created.flatMap((i) =>
+          i.variants.map((v) => ({
+            variantId: v.id,
+            platform: v.platform,
+            assetIds: v.assetIds,
+          })),
+        );
         return ok({
           created: created.map((i) => ({
             itemId: i.id,
@@ -203,8 +240,10 @@ export function createTools(store: ContentStore, session: Session, deps: ToolDep
               format: v.media.format,
               scheduledFor: v.scheduledFor,
               status: v.status,
+              assetIds: v.assetIds,
             })),
           })),
+          warning: mediaWarning(saved),
         });
       } catch (e) {
         return fail(e);
@@ -232,7 +271,11 @@ export function createTools(store: ContentStore, session: Session, deps: ToolDep
             platform: v.platform,
             format: v.media.format,
             status: v.status,
+            assetIds: v.assetIds,
           })),
+          warning: mediaWarning(
+            added.map((v) => ({ variantId: v.id, platform: v.platform, assetIds: v.assetIds })),
+          ),
         });
       } catch (e) {
         return fail(e);
@@ -281,7 +324,23 @@ export function createTools(store: ContentStore, session: Session, deps: ToolDep
     run: async (args) => {
       try {
         const v = await store.updateVariant(userId, args.variantId, args.changes);
-        return ok({ variantId: v.id, status: v.status, scheduledFor: v.scheduledFor });
+        const triedToSchedule = args.changes.scheduledFor !== undefined;
+        return ok({
+          variantId: v.id,
+          status: v.status,
+          scheduledFor: v.scheduledFor,
+          // Stated outright, because the model has claimed "Scheduled." after
+          // this call. The status alone was evidently not loud enough.
+          isScheduled: v.status === "SCHEDULED",
+          ...(triedToSchedule && v.status !== "SCHEDULED"
+            ? {
+                warning:
+                  `The time is set but this is ${v.status}, NOT SCHEDULED — it will not ` +
+                  `publish. Call schedule_variant to commit it, and do not tell the user ` +
+                  `it is scheduled until a call returns status SCHEDULED.`,
+              }
+            : {}),
+        });
       } catch (e) {
         return fail(e);
       }
@@ -338,7 +397,10 @@ export function createTools(store: ContentStore, session: Session, deps: ToolDep
   const scheduleVariant = betaZodTool({
     name: "schedule_variant",
     description:
+      "COMMIT a variant to publishing at a time. This is the only tool that makes a post " +
+      "actually go out — update_variant does not, whatever time you set on it.\n\n" +
       "Schedule an APPROVED variant for publishing. Fails if a human has not approved it, " +
+      "if it has no media attached, " +
       "if the channel is not connected, or if the time is in the past. Supply a stable " +
       "idempotencyKey built from the variant id and time (e.g. 'var_1a2b3c@2026-09-14T11:00') " +
       "so retrying this call can never double-post.",

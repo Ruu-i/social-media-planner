@@ -1289,5 +1289,65 @@ try {
   );
 }
 
+
+// The agent is told, by the tool itself, when it has just made a mistake.
+//
+// Three failures in one afternoon were all tool-use errors the system could not
+// see until publish time: a post saved with no media (twice), and a time set
+// with update_variant while the model announced it had scheduled it. These
+// assert the corrections arrive in the RESULT, where the model will read them,
+// rather than in a prompt it has to remember.
+{
+  const { createTools } = await import("./agent/tools.js");
+  const toolStore = createSeededStore();
+  const tools = createTools(toolStore, { userId: USER_ID, sessionId: "s" });
+  const byName = (n: string) =>
+    tools.find((t) => (t as { name?: string }).name === n) as unknown as {
+      run: (args: unknown) => Promise<{ content?: unknown }>;
+    };
+
+  const textOf = (result: unknown): string => JSON.stringify(result);
+
+  // save_content with an Instagram variant and no media.
+  const saved = await byName("save_content").run({
+    items: [item({ variants: [variant({ assetIds: [] })] })],
+  });
+  check(
+    "save_content warns when an Instagram post has no media",
+    /NOT PUBLISHABLE/.test(textOf(saved)) && /assetIds/.test(textOf(saved)),
+    textOf(saved).slice(0, 160),
+  );
+
+  // ...and stays quiet when it does.
+  const savedOk = await byName("save_content").run({
+    items: [item({ variants: [variant()] })],
+  });
+  check(
+    "save_content does not warn when media is attached",
+    !/NOT PUBLISHABLE/.test(textOf(savedOk)),
+  );
+
+  // update_variant must never let the model believe it scheduled something.
+  const [forUpdate] = await toolStore.createContent(USER_ID, [item()]);
+  const uv = forUpdate!.variants[0]!;
+  await toolStore.humanApprove(USER_ID, uv.id);
+  const updated = await byName("update_variant").run({
+    variantId: uv.id,
+    changes: { scheduledFor: future(4) },
+  });
+  check(
+    "update_variant says plainly that it did NOT schedule",
+    /NOT SCHEDULED/.test(textOf(updated)) && /schedule_variant/.test(textOf(updated)),
+    textOf(updated).slice(0, 160),
+  );
+  check(
+    "update_variant reports isScheduled false",
+    // The tool result is a JSON string inside a JSON object, so the quotes are
+    // escaped by the time this sees them.
+    /isScheduled\D{0,4}false/.test(textOf(updated)),
+    textOf(updated).slice(0, 120),
+  );
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed  (store: ${STORE_KIND})\n`);
 process.exit(fail > 0 ? 1 : 0);

@@ -191,6 +191,14 @@ export const api = {
       body: JSON.stringify(changes),
     }).then(json<{ variant: Variant }>),
 
+  /** Commit a post to a time. Goes straight to the store, like approve. */
+  schedule: (variantId: string, scheduledFor: string) =>
+    fetch(apiUrl(`/api/variants/${variantId}/schedule`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scheduledFor }),
+    }).then(json<{ variant: Variant }>),
+
   cancel: (variantId: string) =>
     fetch(apiUrl(`/api/variants/${variantId}/cancel`), { method: "POST" }).then(
       json<{ variant: Variant }>,
