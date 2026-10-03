@@ -1255,5 +1255,39 @@ try {
   );
 }
 
+
+// A post scheduled with a NON-UTC offset must still be found when it is due.
+//
+// Every other fixture here uses `future()`, which returns a UTC "...Z" string —
+// so they all compared correctly and this bug hid behind them for the entire
+// life of the DynamoDB store. In production every real post carries the user's
+// offset, because that is what they typed, and DynamoDB compares sort keys as
+// STRINGS: "2026-10-03T13:25:00+05:30" is lexically GREATER than the UTC "now"
+// it is compared against, so a post that was due reported as not due until the
+// UTC clock passed 13:25 — five and a half hours late.
+{
+  // Two minutes from now, written in +05:30 rather than UTC. Same instant,
+  // different reference frame — which is the whole point.
+  const instant = new Date(Date.now() + 120_000);
+  const plus0530 = new Date(instant.getTime() + 5.5 * 3600_000)
+    .toISOString()
+    .replace(/\.\d+Z$/, "+05:30");
+
+  const [offsetItem] = await store.createContent(USER_ID, [
+    item({ variants: [variant({ scheduledFor: plus0530 })] }),
+  ]);
+  const ov = offsetItem!.variants[0]!;
+  await store.humanApprove(USER_ID, ov.id);
+  await store.scheduleVariant(USER_ID, ov.id, plus0530, "key-offset-tz");
+
+  // Ask as of five minutes from now: the post is unambiguously due by then.
+  const due = await store.getDueVariants(new Date(Date.now() + 300_000));
+  check(
+    "a post scheduled with a +05:30 offset is found when due",
+    due.some((d) => d.id === ov.id),
+    `scheduled ${plus0530}; due ids: ${due.map((d) => d.id).join(",") || "none"}`,
+  );
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed  (store: ${STORE_KIND})\n`);
 process.exit(fail > 0 ? 1 : 0);

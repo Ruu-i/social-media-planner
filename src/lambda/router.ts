@@ -151,6 +151,53 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
       return json(200, { entries: toTranscript(await conversations.load(messages[1]!)) });
     }
 
+    if (method === "GET" && path === "/api/profile") {
+      return json(200, { profile: await store.getBusinessProfile(USER_ID) });
+    }
+
+    if (method === "PATCH" && path === "/api/profile") {
+      const body = bodyOf(event);
+      const changes: Record<string, unknown> = {};
+
+      for (const field of [
+        "businessName",
+        "description",
+        "industry",
+        "targetAudience",
+        "location",
+        "timezone",
+        "tone",
+        "marketingGoal",
+      ]) {
+        if (typeof body[field] === "string") changes[field] = body[field];
+      }
+      if (typeof body.postsPerWeek === "number" && body.postsPerWeek > 0) {
+        changes.postsPerWeek = Math.round(body.postsPerWeek);
+      }
+      for (const field of ["contentPillars", "bannedWords"]) {
+        if (Array.isArray(body[field])) {
+          changes[field] = (body[field] as unknown[])
+            .filter((x): x is string => typeof x === "string")
+            .map((x) => x.trim())
+            .filter(Boolean);
+        }
+      }
+
+      // An empty pillar list would leave the agent with nothing to plan around,
+      // so it is refused rather than saved as a profile that cannot be used.
+      if (Array.isArray(changes.contentPillars) && changes.contentPillars.length === 0) {
+        return json(400, {
+          error: "INVALID_INPUT",
+          message: "Keep at least one content pillar — the agent plans around them.",
+        });
+      }
+      if (Object.keys(changes).length === 0) {
+        return json(400, { error: "INVALID_INPUT", message: "Nothing to change" });
+      }
+
+      return json(200, { profile: await store.updateBusinessProfile(USER_ID, changes) });
+    }
+
     if (method === "GET" && path === "/api/calendar") {
       return json(200, { items: await store.getCalendar(USER_ID) });
     }

@@ -107,6 +107,21 @@ export interface ProviderStatus {
   reason?: string;
 }
 
+/** Everything the agent knows about who it is writing for. */
+export interface BusinessProfile {
+  businessName: string;
+  description: string;
+  industry: string;
+  targetAudience: string;
+  location: string;
+  timezone: string;
+  tone: string;
+  marketingGoal: string;
+  postsPerWeek: number;
+  contentPillars: string[];
+  bannedWords: string[];
+}
+
 export interface PublishOutcome {
   variantId: string;
   platform: Platform;
@@ -189,6 +204,15 @@ export const api = {
     fetch(apiUrl("/api/turn-allowed")).then(
       json<{ allowed: boolean; reason?: string; spentUsd: number; budgetUsd: number }>,
     ),
+
+  profile: () => fetch(apiUrl("/api/profile")).then(json<{ profile: BusinessProfile }>),
+
+  updateProfile: (changes: Partial<BusinessProfile>) =>
+    fetch(apiUrl("/api/profile"), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
+    }).then(json<{ profile: BusinessProfile }>),
 
   connections: () =>
     fetch(apiUrl("/api/connections")).then(

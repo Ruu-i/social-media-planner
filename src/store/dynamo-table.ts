@@ -87,6 +87,20 @@ export const key = {
   /** Zero-padded so lexical order is chronological order. */
   message: (n: number) => `MSG#${String(n).padStart(6, "0")}`,
   dueStatus: () => "STATUS#SCHEDULED",
+  /**
+   * The due-queue sort key, NORMALISED TO UTC.
+   *
+   * DynamoDB compares sort keys as STRINGS. `scheduledFor` carries the user's
+   * offset — "2026-10-03T13:25:00+05:30" — and the sweep compares it against
+   * `now.toISOString()`, which is UTC. Lexically "13:25" > "08:00", so a post
+   * due at 13:25+05:30 (08:00Z) looked five and a half hours away and the sweep
+   * reported "nothing due" while the user watched the clock pass.
+   *
+   * Every value in a sort key has to be in ONE reference frame. Display keeps
+   * the offset, because that is what the user meant; the index does not, because
+   * it is only ever compared.
+   */
+  dueAt: (scheduledFor: string) => new Date(scheduledFor).toISOString(),
 };
 
 export async function createTable(client: DynamoDBDocumentClient, tableName = TABLE_NAME) {

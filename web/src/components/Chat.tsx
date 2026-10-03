@@ -77,7 +77,12 @@ export function Chat({
     api
       .messages(sessionId)
       .then(({ entries: prior }) => {
-        if (cancelled || prior.length === 0) return;
+        if (cancelled) return;
+        // Set unconditionally, INCLUDING an empty result. Skipping the empty
+        // case left the previous conversation on screen after "New chat" — the
+        // session had genuinely changed, so the next message went somewhere
+        // else, but the transcript still showed the old one. It looked like the
+        // button did nothing.
         setEntries(
           prior.map((e) =>
             e.role === "user"
@@ -85,6 +90,9 @@ export function Chat({
               : ({ kind: "assistant", text: e.text } as const),
           ),
         );
+        // Anything half-composed belonged to the old conversation.
+        setAttached([]);
+        setInput("");
       })
       .catch(() => {
         // A missing transcript is not an error worth showing — it just means

@@ -31,6 +31,8 @@ infra/.terraform/
 infra/terraform.tfstate
 infra/terraform.tfstate.backup
 infra/*.tfvars
+# Transient: present only while a terraform command is running.
+infra/.terraform.tfstate.lock.info
 
 # TypeScript incremental build info
 *.tsbuildinfo

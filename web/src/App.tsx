@@ -6,6 +6,7 @@ import { MediaLibrary } from "./components/MediaLibrary";
 import { Accounts } from "./components/Accounts";
 import { Tooltip } from "./components/Tooltip";
 import { Notifications } from "./components/Notifications";
+import { Profile } from "./components/Profile";
 import { AnimatedBackdrop } from "./ui";
 
 export default function App() {
@@ -15,6 +16,7 @@ export default function App() {
   const [assets, setAssets] = useState<MediaAsset[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [showAccounts, setShowAccounts] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const [livePublishing, setLivePublishing] = useState(false);
   const [confirmPublish, setConfirmPublish] = useState(false);
   const [connectNotice, setConnectNotice] = useState<string | null>(null);
@@ -199,6 +201,15 @@ export default function App() {
               account already present it rendered as plain text with no
               affordance, so there was no visible way to connect anything. A
               named button is findable whether or not something is connected. */}
+          <Tooltip text="Who the agent writes for — name, tone, audience, the themes it plans around.">
+            <button
+              onClick={() => setShowProfile(true)}
+              className="rounded-lg px-3 py-1.5 text-[11px] font-medium text-stone-600 transition hover:bg-stone-100 hover:text-stone-900"
+            >
+              Business
+            </button>
+          </Tooltip>
+
           <Notifications items={items} />
 
           <Tooltip
@@ -454,6 +465,10 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {showProfile && (
+        <Profile onClose={() => setShowProfile(false)} onSaved={() => void refresh()} />
       )}
 
       {showAccounts && (

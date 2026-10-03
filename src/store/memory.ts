@@ -74,6 +74,14 @@ export class MemoryStore implements ContentStore {
     return this.profile;
   }
 
+  async updateBusinessProfile(
+    _userId: string,
+    changes: Partial<BusinessProfile>,
+  ): Promise<BusinessProfile> {
+    this.profile = { ...this.profile, ...changes };
+    return this.profile;
+  }
+
   async getConnectedAccounts(userId: string) {
     return this.connections.listChannels(userId);
   }

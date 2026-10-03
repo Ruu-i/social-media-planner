@@ -67,8 +67,44 @@ export class DynamoStore implements ContentStore {
 
   // -- injected, not persisted (yet) ---------------------------------------
 
-  async getBusinessProfile(_userId: string): Promise<BusinessProfile> {
-    return this.profile;
+  /**
+   * The profile, from the table — falling back to the seeded one.
+   *
+   * `key.profile()` was defined in the schema from the start and never used:
+   * the profile lived in the constructor, so it survived nothing and could be
+   * changed by nobody.
+   *
+   * The fallback matters for an account that has never saved one. Returning the
+   * demo profile beats returning nothing, which the agent would have to handle
+   * as a missing-business case on every single turn.
+   */
+  async getBusinessProfile(userId: string): Promise<BusinessProfile> {
+    const result = await this.client.send(
+      new GetCommand({
+        TableName: this.table,
+        Key: { PK: key.user(userId), SK: key.profile() },
+      }),
+    );
+    if (!result.Item) return this.profile;
+    const { PK, SK, ...rest } = result.Item;
+    return rest as BusinessProfile;
+  }
+
+  async updateBusinessProfile(
+    userId: string,
+    changes: Partial<BusinessProfile>,
+  ): Promise<BusinessProfile> {
+    // Read-modify-write rather than an UpdateExpression: a profile is edited by
+    // one person in one form, so there is no concurrent writer to lose, and the
+    // merged object is validated as a whole before it is stored.
+    const next = { ...(await this.getBusinessProfile(userId)), ...changes };
+    await this.client.send(
+      new PutCommand({
+        TableName: this.table,
+        Item: { PK: key.user(userId), SK: key.profile(), ...next },
+      }),
+    );
+    return next;
   }
 
   async getConnectedAccounts(userId: string) {
@@ -653,7 +689,7 @@ export class DynamoStore implements ContentStore {
       GSI1PK: key.item(v.itemId),
       GSI1SK: key.variant(v.id),
       GSI2PK: v.status === "SCHEDULED" ? key.dueStatus() : undefined,
-      GSI2SK: v.status === "SCHEDULED" ? v.scheduledFor : undefined,
+      GSI2SK: v.status === "SCHEDULED" ? key.dueAt(v.scheduledFor) : undefined,
     });
   }
 

@@ -30,6 +30,22 @@ import type { MediaStore } from "./media.js";
 export interface ContentStore {
   // -- reads ---------------------------------------------------------------
   getBusinessProfile(userId: string): Promise<BusinessProfile>;
+
+  /**
+   * Change who the agent thinks it is writing for.
+   *
+   * This was a hard-coded constant, which meant every user of the app was told
+   * they ran a coffee shop in Colombo — the agent dutifully wrote cafe copy
+   * around a photo of a garden, because the profile said so and the profile was
+   * never wrong, only fixed.
+   *
+   * Partial, because a profile is edited a field at a time; the whole object is
+   * rarely what changed.
+   */
+  updateBusinessProfile(
+    userId: string,
+    changes: Partial<BusinessProfile>,
+  ): Promise<BusinessProfile>;
   getConnectedAccounts(userId: string): Promise<ChannelSummary[]>;
   getCalendar(
     userId: string,

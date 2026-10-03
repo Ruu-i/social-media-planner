@@ -80,7 +80,7 @@ export async function ensureSeeded(
         // Only SCHEDULED variants carry GSI2, which is what keeps the
         // publisher's work queue sparse rather than a scan of every row.
         ...(variant.status === "SCHEDULED" && variant.scheduledFor
-          ? { GSI2PK: key.dueStatus(), GSI2SK: variant.scheduledFor }
+          ? { GSI2PK: key.dueStatus(), GSI2SK: key.dueAt(variant.scheduledFor) }
           : {}),
         ...variant,
       });
