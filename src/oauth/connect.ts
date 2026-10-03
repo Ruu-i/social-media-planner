@@ -110,6 +110,41 @@ export class ConnectService {
     return { userId: payload.userId, handles: channels.map((c) => c.handle) };
   }
 
+  /**
+   * Check a stored grant against the provider, and record the answer.
+   *
+   * Marking REAUTH_REQUIRED here is the point: without it the check is a
+   * read-only curiosity that tells one browser tab the truth and leaves the
+   * database still claiming the connection is fine. The publisher reads the
+   * database.
+   */
+  async verify(
+    userId: string,
+    connectionId: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const connection = (await this.connections.listConnections(userId)).find(
+      (c) => c.id === connectionId,
+    );
+    if (!connection) return { ok: false, reason: "No such connection" };
+
+    const impl = this.providers.get(connection.provider);
+    if (!impl) return { ok: false, reason: `No provider for ${connection.provider}` };
+
+    let result: { ok: boolean; reason?: string };
+    try {
+      result = await impl.verify(await this.tokens.get(connection.tokenRef));
+    } catch (error) {
+      // A missing token is itself a dead connection — the row outlived the
+      // credential it points at.
+      result = { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+
+    if (!result.ok && connection.status === "ACTIVE") {
+      await this.connections.markReauthRequired(connection.id);
+    }
+    return result;
+  }
+
   async disconnect(userId: string, connectionId: string): Promise<void> {
     const tokenRef = await this.connections.removeConnection(userId, connectionId);
     // Revoking our copy of the credential is the part that actually matters;

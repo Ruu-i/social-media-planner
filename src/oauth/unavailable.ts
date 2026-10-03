@@ -26,6 +26,10 @@ export class UnavailableProvider implements OAuthProvider {
     return false;
   }
 
+  async verify(): Promise<{ ok: boolean; reason?: string }> {
+    return { ok: false, reason: this.unavailableReason };
+  }
+
   authorizeUrl(): string {
     throw new OAuthError(this.unavailableReason, "NOT_CONFIGURED");
   }

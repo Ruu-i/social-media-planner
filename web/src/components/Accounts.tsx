@@ -38,13 +38,41 @@ export function Accounts({
       const data = await api.connections();
       setConnections(data.connections);
       setProviders(data.providers);
+      return data.connections;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      return [];
+    }
+  };
+
+  /**
+   * Check every live grant when the panel opens.
+   *
+   * A token can die without anyone being told — revoked, password changed,
+   * account type switched — and the stored row keeps saying ACTIVE. Checking
+   * here means the one screen whose entire job is reporting connection health
+   * is never the screen that lies about it.
+   *
+   * Done on open rather than on every page load: it is a network round trip per
+   * connection, and this is the only place the answer is acted on.
+   */
+  const verifyAll = async (live: Connection[]) => {
+    const active = live.filter((c) => c.status === "ACTIVE");
+    if (active.length === 0) return;
+
+    const results = await Promise.all(
+      active.map((c) => api.verifyConnection(c.id).catch(() => ({ ok: true }) as const)),
+    );
+    // Re-read rather than patching state: verify WRITES the new status, so the
+    // server is now the authority on what these rows say.
+    if (results.some((r) => !r.ok)) {
+      await load();
+      onChanged();
     }
   };
 
   useEffect(() => {
-    void load();
+    void load().then(verifyAll);
   }, []);
 
   const connect = async (provider: string) => {

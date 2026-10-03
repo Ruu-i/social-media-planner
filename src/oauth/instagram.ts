@@ -67,6 +67,26 @@ export class InstagramOAuthProvider implements OAuthProvider {
     return `${AUTHORIZE_URL}?${params}`;
   }
 
+  async verify(token: string): Promise<{ ok: boolean; reason?: string }> {
+    const params = new URLSearchParams({ fields: "user_id,account_type", access_token: token });
+    const res = await fetch(`${GRAPH}/v23.0/me?${params}`);
+    if (res.ok) {
+      const json = (await res.json()) as { account_type?: string };
+      // Still authenticated, but no longer publishable: switching back to a
+      // personal account leaves a VALID token that cannot post.
+      if ((json.account_type ?? "").toUpperCase() === "PERSONAL") {
+        return {
+          ok: false,
+          reason: "That account is personal again. Switch it back to Business or Creator.",
+        };
+      }
+      return { ok: true };
+    }
+
+    const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    return { ok: false, reason: body.error?.message ?? `Instagram returned ${res.status}` };
+  }
+
   async exchange(code: string, redirectUri: string): Promise<Grant> {
     if (!this.isConfigured()) {
       throw new OAuthError("Instagram app credentials are not configured", "NOT_CONFIGURED");

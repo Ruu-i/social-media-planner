@@ -38,6 +38,17 @@ export interface OAuthProvider {
   authorizeUrl(state: string, redirectUri: string): string;
 
   /**
+   * Is this grant still usable?
+   *
+   * Tokens die for reasons that never reach us: the user revokes the app,
+   * changes their password, or switches the account type. Nothing in an OAuth
+   * flow notifies the application, so a connection stays ACTIVE and green while
+   * being completely dead — and the first symptom is a post that silently never
+   * goes out.
+   */
+  verify(token: string): Promise<{ ok: boolean; reason?: string }>;
+
+  /**
    * Trade the callback's `code` for a token and discover what it can publish to.
    *
    * Returns the token rather than storing it, so that the one place tokens are

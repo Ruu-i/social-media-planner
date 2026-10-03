@@ -223,6 +223,12 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
       return redirectToUi(`connected=1&handle=${encodeURIComponent(result.handles[0] ?? "")}`);
     }
 
+    const verify = /^\/api\/connections\/([^/]+)\/verify$/.exec(path);
+    if (method === "POST" && verify) {
+      await ensureOAuthSecrets();
+      return json(200, await connectService.verify(USER_ID, verify[1]!));
+    }
+
     const disconnect = /^\/api\/connections\/([^/]+)\/disconnect$/.exec(path);
     if (method === "POST" && disconnect) {
       await connectService.disconnect(USER_ID, disconnect[1]!);

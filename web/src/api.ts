@@ -176,6 +176,12 @@ export const api = {
   connectStart: (provider: string) =>
     fetch(apiUrl(`/api/connect/${provider}/start`)).then(json<{ url: string }>),
 
+  /** Ask the provider whether a stored grant still works. Persists the answer. */
+  verifyConnection: (connectionId: string) =>
+    fetch(apiUrl(`/api/connections/${connectionId}/verify`), { method: "POST" }).then(
+      json<{ ok: boolean; reason?: string }>,
+    ),
+
   disconnect: (connectionId: string) =>
     fetch(apiUrl(`/api/connections/${connectionId}/disconnect`), { method: "POST" }).then(
       json<{ disconnected: boolean }>,
