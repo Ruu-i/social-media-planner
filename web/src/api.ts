@@ -240,6 +240,31 @@ export const api = {
       json<{ disconnected: boolean }>,
     ),
 
+  /** Step 1 of a direct upload: a URL the browser can PUT to. */
+  uploadUrl: (filename: string) =>
+    fetch(apiUrl("/api/media/upload-url"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename }),
+    }).then(json<{ uploadUrl: string; storageRef: string; publicUrl: string; contentType: string }>),
+
+  /** Step 3: record the file now sitting in S3. */
+  registerMedia: (input: {
+    filename: string;
+    storageRef: string;
+    publicUrl: string;
+    description: string;
+    width: number;
+    height: number;
+    durationSeconds: number;
+    bytes: number;
+  }) =>
+    fetch(apiUrl("/api/media/register"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }).then(json<{ asset: MediaAsset; suitableFormats: string[] }>),
+
   upload: (filename: string, dataBase64: string) =>
     fetch(apiUrl("/api/media"), {
       method: "POST",

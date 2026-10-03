@@ -135,6 +135,26 @@ resource "aws_s3_bucket_public_access_block" "media" {
   restrict_public_buckets = false
 }
 
+# The browser uploads STRAIGHT to this bucket, so S3 itself has to allow the
+# cross-origin PUT — the Function URL's CORS says nothing about requests that
+# never reach it.
+#
+# Without this the preflight fails and the upload dies with a CORS error that
+# names S3, not this app, which is a confusing place to start debugging.
+resource "aws_s3_bucket_cors_configuration" "media" {
+  bucket = aws_s3_bucket.media.id
+
+  cors_rule {
+    allowed_methods = ["PUT", "GET"]
+    allowed_origins = var.cors_origins
+    # The signed URL commits to a Content-Type, so the browser must be allowed
+    # to send one.
+    allowed_headers = ["content-type"]
+    expose_headers  = ["etag"]
+    max_age_seconds = 3600
+  }
+}
+
 resource "aws_s3_bucket_policy" "media_public_read" {
   bucket     = aws_s3_bucket.media.id
   depends_on = [aws_s3_bucket_public_access_block.media]

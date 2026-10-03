@@ -365,6 +365,14 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
       }
     }
 
+    if (method === "POST" && path === "/api/media/upload-url") {
+      return await presignUpload(bodyOf(event));
+    }
+
+    if (method === "POST" && path === "/api/media/register") {
+      return await registerUploaded(bodyOf(event));
+    }
+
     if (method === "POST" && path === "/api/media") {
       return await uploadMedia(bodyOf(event));
     }
@@ -466,6 +474,110 @@ function redirectToUi(query: string): RouteResult {
     statusCode: 302,
     location: `${ui}/?${query}`,
   };
+}
+
+
+/** Video types we accept. Meta publishes MP4 and MOV for Reels and Stories. */
+const VIDEO_TYPES: Record<string, string> = {
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+};
+
+/**
+ * Hand the browser a URL it can upload to directly.
+ *
+ * Only the metadata comes back through this app. That is what makes video
+ * possible at all — the bytes never enter a Lambda request.
+ */
+async function presignUpload(body: Record<string, unknown>): Promise<RouteResult> {
+  const { filename } = body;
+  if (typeof filename !== "string" || !filename.trim()) {
+    return json(400, { error: "INVALID_INPUT", message: "filename is required" });
+  }
+
+  const ext = filename.toLowerCase().split(".").pop() ?? "";
+  const contentType = VIDEO_TYPES[ext] ?? mimeFor(filename);
+  if (contentType === "application/octet-stream") {
+    return json(400, {
+      error: "INVALID_INPUT",
+      message: `${ext || "that file"} is not supported. Use jpg, png, gif, webp, mp4 or mov.`,
+    });
+  }
+
+  if (!("presignPut" in storage)) {
+    return json(503, {
+      error: "NOT_CONFIGURED",
+      message: "Direct upload needs S3. Set MEDIA_BUCKET.",
+    });
+  }
+
+  const signed = await (
+    storage as unknown as {
+      presignPut: (u: string, f: string, c: string) => Promise<Record<string, string>>;
+    }
+  ).presignPut(USER_ID, filename, contentType);
+
+  return json(200, { ...signed, contentType });
+}
+
+/**
+ * Record a file the browser has already put in S3.
+ *
+ * Video skips the vision pass entirely: the model cannot watch a video, and
+ * describing one frame of it invites confident nonsense about what happens in
+ * the other fourteen seconds. The USER describes it instead, which is both
+ * cheaper and more accurate — they were there.
+ */
+async function registerUploaded(body: Record<string, unknown>): Promise<RouteResult> {
+  const { filename, storageRef, publicUrl, description } = body;
+  if (typeof filename !== "string" || typeof storageRef !== "string" || typeof publicUrl !== "string") {
+    return json(400, {
+      error: "INVALID_INPUT",
+      message: "filename, storageRef and publicUrl are required",
+    });
+  }
+
+  const ext = filename.toLowerCase().split(".").pop() ?? "";
+  const isVideo = ext in VIDEO_TYPES;
+  const mimeType = isVideo ? VIDEO_TYPES[ext]! : mimeFor(filename);
+
+  const described = typeof description === "string" ? description.trim() : "";
+  if (isVideo && described.length < 10) {
+    // Refused rather than defaulted. An agent planning around "a video" writes
+    // copy that fits anything, which is to say nothing.
+    return json(400, {
+      error: "INVALID_INPUT",
+      message: "Describe what happens in the video — the agent cannot watch it.",
+    });
+  }
+
+  const width = Number(body.width) || 1080;
+  const height = Number(body.height) || 1920;
+  const durationSeconds = isVideo ? Math.round(Number(body.durationSeconds) || 0) : null;
+
+  const asset = media.add({
+    userId: USER_ID,
+    kind: isVideo ? "VIDEO" : "IMAGE",
+    mimeType,
+    filename,
+    bytes: Number(body.bytes) || 0,
+    width,
+    height,
+    durationSeconds,
+    storageRef,
+    publicUrl,
+    description: described,
+    tags: [],
+    hasTextInFrame: false,
+    describedFrom: isVideo ? "USER_PROVIDED" : "IMAGE",
+  });
+
+  await media.flush();
+
+  return json(200, {
+    asset: media.summarise(USER_ID, asset.id),
+    suitableFormats: suitableFormats(asset),
+  });
 }
 
 function mimeFor(filePath: string): string {

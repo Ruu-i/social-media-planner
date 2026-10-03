@@ -62,7 +62,12 @@ export interface MediaAsset {
    * an extracted frame, and this says so rather than letting the agent believe
    * it has seen motion.
    */
-  describedFrom: "IMAGE" | "VIDEO_FRAME" | "NOT_DESCRIBED";
+  /**
+   * Where the description came from, which decides how much the agent should
+   * trust it. USER_PROVIDED is the most reliable of the four — a person who has
+   * watched the video beats a model that has seen one frame of it.
+   */
+  describedFrom: "IMAGE" | "VIDEO_FRAME" | "USER_PROVIDED" | "NOT_DESCRIBED";
 
   uploadedAt: string;
   lastUsedAt: string | null;

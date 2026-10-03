@@ -54,6 +54,13 @@ export function Chat({
   const [attached, setAttached] = useState<MediaAsset[]>([]);
   const [uploading, setUploading] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [pendingVideo, setPendingVideo] = useState<{
+    file: File;
+    width: number;
+    height: number;
+    duration: number;
+  } | null>(null);
+  const [videoDescription, setVideoDescription] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -128,10 +135,53 @@ export function Chat({
     return () => clearInterval(t);
   }, [phase]);
 
+  /**
+   * Read a video's shape and length in the browser.
+   *
+   * The server cannot do this without a media library, and does not need to —
+   * the browser already decoded the file to show a preview. Aspect ratio is
+   * what decides whether something can be a Reel at all, so getting it from the
+   * source beats guessing 1080x1920 and being wrong.
+   */
+  function videoMeta(file: File): Promise<{ width: number; height: number; duration: number }> {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(file);
+      const el = document.createElement("video");
+      el.preload = "metadata";
+      el.onloadedmetadata = () => {
+        URL.revokeObjectURL(url);
+        resolve({
+          width: el.videoWidth,
+          height: el.videoHeight,
+          duration: Math.round(el.duration || 0),
+        });
+      };
+      // A codec the browser cannot decode should not block the upload — the
+      // server falls back to a vertical default.
+      el.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve({ width: 0, height: 0, duration: 0 });
+      };
+      el.src = url;
+    });
+  }
+
   async function attach(files: FileList | null) {
     const file = files?.[0];
     if (!file) return;
     setUploadError(null);
+
+    const isVideo = /\.(mp4|mov)$/i.test(file.name);
+    if (isVideo) {
+      // Hold it until the user says what is in it. The model cannot watch a
+      // video, so a description is not optional metadata — it is the only
+      // thing the agent will know about these bytes.
+      const meta = await videoMeta(file);
+      setPendingVideo({ file, ...meta });
+      if (fileInput.current) fileInput.current.value = "";
+      return;
+    }
+
     setUploading(file.name);
     try {
       const dataBase64 = await toBase64(file);
@@ -144,6 +194,47 @@ export function Chat({
     } finally {
       setUploading(null);
       if (fileInput.current) fileInput.current.value = "";
+    }
+  }
+
+  /** Upload the held video once it has been described. */
+  async function uploadVideo() {
+    if (!pendingVideo || videoDescription.trim().length < 10) return;
+    const { file, width, height, duration } = pendingVideo;
+
+    setUploading(file.name);
+    setUploadError(null);
+    try {
+      const signed = await api.uploadUrl(file.name);
+
+      // Straight to S3. The bytes never touch this app, which is the only way
+      // a 20 MB Reel gets uploaded at all.
+      const put = await fetch(signed.uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": signed.contentType },
+        body: file,
+      });
+      if (!put.ok) throw new Error(`Upload failed (${put.status})`);
+
+      const { asset } = await api.registerMedia({
+        filename: file.name,
+        storageRef: signed.storageRef,
+        publicUrl: signed.publicUrl,
+        description: videoDescription.trim(),
+        width,
+        height,
+        durationSeconds: duration,
+        bytes: file.size,
+      });
+
+      setAttached((a) => [...a, asset]);
+      setPendingVideo(null);
+      setVideoDescription("");
+      onChanged();
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploading(null);
     }
   }
 
@@ -288,6 +379,54 @@ export function Chat({
         {/* Attached but not yet sent. Uploading on pick rather than on send
             means the vision pass is already done by the time the agent reads
             the message, so "schedule this reel" resolves immediately. */}
+        {/* A video cannot be auto-described, so the upload pauses here.
+            The agent gets exactly what the user writes — which beats a vision
+            pass on one frame, because that frame says nothing about the other
+            fourteen seconds. */}
+        {pendingVideo && (
+          <div className="mb-2 rounded-xl border border-violet-200 bg-violet-50/60 p-3">
+            <p className="text-[12px] font-medium text-stone-800">
+              What happens in {pendingVideo.file.name}?
+            </p>
+            <p className="mt-0.5 text-[11px] text-stone-600">
+              {pendingVideo.width > 0
+                ? `${pendingVideo.width}×${pendingVideo.height}`
+                : "shape unknown"}
+              {pendingVideo.duration > 0 ? ` · ${pendingVideo.duration}s` : ""} — the agent cannot
+              watch it, so it only knows what you write here.
+            </p>
+            <textarea
+              value={videoDescription}
+              onChange={(e) => setVideoDescription(e.target.value)}
+              rows={2}
+              autoFocus
+              placeholder="Pouring a cold brew over ice, close up, steam on the glass, no talking"
+              className="mt-2 w-full resize-y rounded-lg border border-stone-300 bg-white px-2.5 py-2 text-[12px] text-stone-800 outline-none placeholder:text-stone-400 focus:border-violet-400"
+            />
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                disabled={videoDescription.trim().length < 10 || uploading !== null}
+                onClick={() => void uploadVideo()}
+                className="rounded-lg bg-violet-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:bg-stone-200 disabled:text-stone-400"
+              >
+                {uploading ? "Uploading…" : "Upload video"}
+              </button>
+              <button
+                onClick={() => {
+                  setPendingVideo(null);
+                  setVideoDescription("");
+                }}
+                className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-medium text-stone-600 transition hover:border-stone-300"
+              >
+                Cancel
+              </button>
+              {videoDescription.trim().length > 0 && videoDescription.trim().length < 10 && (
+                <span className="text-[10px] text-stone-500">a little more detail</span>
+              )}
+            </div>
+          </div>
+        )}
+
         {attached.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5">
             {attached.map((a) => (

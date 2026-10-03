@@ -1,4 +1,5 @@
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -47,6 +48,43 @@ export class S3MediaStorage implements MediaStorage {
     );
 
     return { storageRef: key, publicUrl: this.publicUrl(key) };
+  }
+
+  /**
+   * A URL the browser can PUT the file to directly.
+   *
+   * Uploads used to be base64 inside the JSON request. Lambda's payload ceiling
+   * is 6 MB and base64 inflates by a third, so anything over ~4.4 MB failed —
+   * which covers a photo comfortably and almost no video at all. A fifteen
+   * second Reel is routinely 20 MB.
+   *
+   * Presigning moves the bytes out of the request path entirely: the browser
+   * talks to S3, and this app only ever handles the metadata. It is also
+   * strictly better for photos, which no longer burn Lambda memory and time
+   * being decoded.
+   */
+  async presignPut(
+    userId: string,
+    filename: string,
+    contentType: string,
+    expiresInSeconds = 900,
+  ): Promise<{ uploadUrl: string; storageRef: string; publicUrl: string }> {
+    const ext = path.extname(filename) || "";
+    const key = `${userId}/${randomUUID().slice(0, 12)}${ext}`;
+
+    const uploadUrl = await getSignedUrl(
+      this.client,
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        // Signed INTO the URL, so the browser must send the same type. Without
+        // it S3 stores application/octet-stream and Meta refuses the fetch.
+        ContentType: contentType,
+      }),
+      { expiresIn: expiresInSeconds },
+    );
+
+    return { uploadUrl, storageRef: key, publicUrl: this.publicUrl(key) };
   }
 
   async read(storageRef: string): Promise<Buffer> {
