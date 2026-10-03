@@ -184,6 +184,32 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
       return json(200, { variant: await store.humanApprove(USER_ID, approve[1]!) });
     }
 
+    // Direct editing, bypassing the agent — for a typo, a wrong price, a name
+    // spelled badly. Going through the model for that costs a turn, takes
+    // ~80 seconds and may rewrite more than was asked.
+    //
+    // It deliberately shares the store method the agent's update_variant tool
+    // uses, so the approval rule applies identically: changing CONTENT revokes
+    // approval, changing only the time keeps it. Editing your way around the
+    // human gate is therefore impossible by construction.
+    const edit = /^\/api\/variants\/([^/]+)$/.exec(path);
+    if (method === "PATCH" && edit) {
+      const body = bodyOf(event);
+      const changes: Record<string, unknown> = {};
+      if (typeof body.caption === "string") changes.caption = body.caption;
+      if (typeof body.callToAction === "string") changes.callToAction = body.callToAction;
+      if (Array.isArray(body.hashtags)) {
+        changes.hashtags = (body.hashtags as unknown[])
+          .filter((h): h is string => typeof h === "string")
+          .map((h) => h.replace(/^#/, "").trim())
+          .filter(Boolean);
+      }
+      if (Object.keys(changes).length === 0) {
+        return json(400, { error: "INVALID_INPUT", message: "Nothing to change" });
+      }
+      return json(200, { variant: await store.updateVariant(USER_ID, edit[1]!, changes) });
+    }
+
     const cancel = /^\/api\/variants\/([^/]+)\/cancel$/.exec(path);
     if (method === "POST" && cancel) {
       return json(200, { variant: await store.cancelVariant(USER_ID, cancel[1]!) });

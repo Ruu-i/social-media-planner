@@ -422,7 +422,9 @@ resource "aws_lambda_function_url" "api" {
     # NOT "OPTIONS". Lambda rejects it: each member must be 6 characters or
     # fewer, and OPTIONS is 7. Preflight is answered by the Function URL itself
     # once CORS is configured, so listing it was both invalid and unnecessary.
-    allow_methods = ["GET", "POST"]
+    # PATCH is 5 characters, so it fits the 6-character limit that ruled out
+    # OPTIONS. Without it the browser blocks the edit request at preflight.
+    allow_methods = ["GET", "POST", "PATCH"]
 
     allow_headers = ["content-type"]
     max_age       = 3600

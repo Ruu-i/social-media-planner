@@ -5,6 +5,7 @@ import { Calendar } from "./components/Calendar";
 import { MediaLibrary } from "./components/MediaLibrary";
 import { Accounts } from "./components/Accounts";
 import { Tooltip } from "./components/Tooltip";
+import { Notifications } from "./components/Notifications";
 import { AnimatedBackdrop } from "./ui";
 
 export default function App() {
@@ -76,6 +77,20 @@ export default function App() {
    * and carries no privilege: it is the key to a transcript this browser just
    * created, which is exactly what should survive a refresh.
    */
+  /**
+   * Poll for background changes.
+   *
+   * The publisher sweep runs every five minutes in a Lambda the browser knows
+   * nothing about, so a post can go out — or fail — with the page showing
+   * yesterday's state indefinitely. Polling at the same cadence as the sweep
+   * keeps the two roughly in step without being chatty: it is one small GET,
+   * and the tab is usually not even open.
+   */
+  useEffect(() => {
+    const id = setInterval(() => void refresh(), 60_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
   useEffect(() => {
     const existing = (() => {
       try {
@@ -180,6 +195,8 @@ export default function App() {
               account already present it rendered as plain text with no
               affordance, so there was no visible way to connect anything. A
               named button is findable whether or not something is connected. */}
+          <Notifications items={items} />
+
           <Tooltip
             text={
               accounts.length === 0

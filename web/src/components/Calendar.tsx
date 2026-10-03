@@ -233,6 +233,9 @@ function VariantRow({
   const [open, setOpen] = useState(false);
   const [working, setWorking] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draftCaption, setDraftCaption] = useState(variant.caption);
+  const [draftTags, setDraftTags] = useState(variant.hashtags.join(" "));
   const [error, setError] = useState<string | null>(null);
 
   const used = variant.assetIds
@@ -342,19 +345,92 @@ function VariantRow({
 
       {open && (
         <div className="animate-fade-up space-y-3 border-t border-stone-100 bg-amber-50/30 px-3.5 py-3">
-          <p className="text-[13px] leading-relaxed whitespace-pre-wrap text-stone-700">
-            {variant.caption}
-          </p>
+          {/* What actually lands on the platform, boxed and labelled.
+              Caption, hashtags and the photo are published. CTA and the media
+              plan are NOT — the connector sends caption + hashtags only. They
+              were rendered in the same list, so a reader could not tell which
+              lines were post content and which were the agent's notes, and the
+              CTA read like a stray second post. */}
+          <div className="rounded-lg border border-stone-200 bg-white p-3">
+            <div className="mb-1.5 flex items-center gap-2">
+              <p className="text-[10px] font-semibold tracking-wide text-stone-400 uppercase">
+                Posts to {variant.platform} as
+              </p>
+              {!editing && variant.status !== "PUBLISHED" && (
+                <button
+                  onClick={() => {
+                    setDraftCaption(variant.caption);
+                    setDraftTags(variant.hashtags.join(" "));
+                    setEditing(true);
+                  }}
+                  className="ml-auto text-[11px] font-medium text-violet-600 transition hover:text-violet-700"
+                >
+                  Edit
+                </button>
+              )}
+            </div>
 
-          {variant.hashtags.length > 0 && (
-            <p className="text-[11px] text-sky-600">
-              {variant.hashtags.map((h) => `#${h}`).join(" ")}
-            </p>
-          )}
+            {editing ? (
+              <div className="space-y-2">
+                <textarea
+                  value={draftCaption}
+                  onChange={(e) => setDraftCaption(e.target.value)}
+                  rows={6}
+                  className="w-full resize-y rounded-lg border border-stone-300 bg-white px-2.5 py-2 text-[13px] leading-relaxed text-stone-800 outline-none focus:border-violet-400"
+                />
+                <input
+                  value={draftTags}
+                  onChange={(e) => setDraftTags(e.target.value)}
+                  placeholder="hashtags, space separated"
+                  className="w-full rounded-lg border border-stone-300 bg-white px-2.5 py-1.5 text-[11px] text-sky-700 outline-none focus:border-violet-400"
+                />
+                <p className="text-[11px] text-amber-700">
+                  Editing the words withdraws your approval — you will need to approve it again.
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    disabled={working}
+                    onClick={async () => {
+                      await act(() =>
+                        api.updateVariant(variant.id, {
+                          caption: draftCaption,
+                          hashtags: draftTags.split(/[\s,]+/).filter(Boolean),
+                        }),
+                      );
+                      setEditing(false);
+                    }}
+                    className="rounded-lg bg-violet-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-violet-500 disabled:opacity-40"
+                  >
+                    Save changes
+                  </button>
+                  <button
+                    onClick={() => setEditing(false)}
+                    className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-medium text-stone-600 transition hover:border-stone-300"
+                  >
+                    Discard
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <p className="text-[13px] leading-relaxed whitespace-pre-wrap text-stone-800">
+                  {variant.caption}
+                </p>
+                {variant.hashtags.length > 0 && (
+                  <p className="mt-2 text-[11px] text-sky-600">
+                    {variant.hashtags.map((h) => `#${h}`).join(" ")}
+                  </p>
+                )}
+              </>
+            )}
+          </div>
 
           <div className="grid gap-1 text-[11px] text-stone-500">
+            <p className="text-[10px] font-semibold tracking-wide text-stone-400 uppercase">
+              Planning notes — not published
+            </p>
             <p>
-              <span className="font-medium text-stone-600">CTA </span>
+              <span className="font-medium text-stone-600">Goal </span>
               {variant.callToAction}
             </p>
             <p>
@@ -414,6 +490,19 @@ function VariantRow({
                 className="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-40"
               >
                 Approve this version
+              </button>
+            )}
+
+            {!editing && (
+              <button
+                onClick={() =>
+                  onAskAgent(
+                    `Revise the ${variant.platform} post for "${topic}" — `,
+                  )
+                }
+                className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-medium text-stone-600 transition hover:border-violet-300 hover:text-violet-700"
+              >
+                Ask the agent to revise
               </button>
             )}
 

@@ -45,6 +45,8 @@ export interface Variant {
   hashtags: string[];
   callToAction: string;
   status: Status;
+  /** When it actually went out, as opposed to when it was meant to. */
+  publishedAt: string | null;
   platformPostId: string | null;
   permalink: string | null;
   failureReason: string | null;
@@ -162,6 +164,17 @@ export const api = {
     fetch(apiUrl(`/api/variants/${variantId}/approve`), { method: "POST" }).then(
       json<{ variant: Variant }>,
     ),
+
+  /** Edit the copy directly. Revokes approval, exactly as the agent's edit does. */
+  updateVariant: (
+    variantId: string,
+    changes: { caption?: string; hashtags?: string[]; callToAction?: string },
+  ) =>
+    fetch(apiUrl(`/api/variants/${variantId}`), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
+    }).then(json<{ variant: Variant }>),
 
   cancel: (variantId: string) =>
     fetch(apiUrl(`/api/variants/${variantId}/cancel`), { method: "POST" }).then(
