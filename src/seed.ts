@@ -283,7 +283,7 @@ export function seedContent(): ContentItemWithVariants[] {
  * Note the deliberate mix of shapes: the 16:9 landscape shot exists so the
  * agent has to notice it cannot be a Reel.
  */
-function seedAssets(): MediaAsset[] {
+export function seedAssets(): MediaAsset[] {
   const base = (i: number) => ({
     userId: USER_ID,
     uploadedAt: new Date(Date.now() - i * 86_400_000).toISOString(),
@@ -306,6 +306,7 @@ function seedAssets(): MediaAsset[] {
     id,
     kind,
     mimeType: kind === "IMAGE" ? "image/jpeg" : "video/mp4",
+    filename: `${id.replace("asset_", "")}.${kind === "IMAGE" ? "jpg" : "mp4"}`,
     width: w,
     height: h,
     aspectRatio: aspectRatioOf(w, h),

@@ -1,7 +1,9 @@
 import {
   agentFor,
   connectService,
+  conversations,
   createSession,
+  livePublishing,
   ensureStoreReady,
   media,
   publisher,
@@ -14,6 +16,7 @@ import { describeImage, canDescribe } from "../media/describe.js";
 import { ensureApiKey } from "../agent/provider.js";
 import { suitableFormats } from "../media/types.js";
 import { ensureOAuthSecrets } from "../oauth/secrets.js";
+import { toTranscript } from "../agent/transcript.js";
 import { OAuthError } from "../oauth/types.js";
 import { StoreError } from "../store/memory.js";
 import { MediaError } from "../store/media.js";
@@ -140,12 +143,26 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
       return json(200, { sessionId: createSession() });
     }
 
+    // Reloading the browser must not lose the conversation. The history is in
+    // the store either way; without this route the UI simply had no way to ask
+    // for it.
+    const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(path);
+    if (method === "GET" && messages) {
+      return json(200, { entries: toTranscript(await conversations.load(messages[1]!)) });
+    }
+
     if (method === "GET" && path === "/api/calendar") {
       return json(200, { items: await store.getCalendar(USER_ID) });
     }
 
     if (method === "GET" && path === "/api/accounts") {
-      return json(200, { accounts: await store.getConnectedAccounts(USER_ID) });
+      return json(200, {
+        accounts: await store.getConnectedAccounts(USER_ID),
+        // The UI needs to know whether publishing is real before it offers a
+        // button that posts. Reported by the server rather than guessed from a
+        // build flag, because the two can disagree.
+        livePublishing,
+      });
     }
 
     if (method === "GET" && path === "/api/budget") {
@@ -307,6 +324,7 @@ async function uploadMedia(body: Record<string, unknown>): Promise<RouteResult> 
     userId: USER_ID,
     kind: "IMAGE",
     mimeType,
+    filename,
     bytes: data.byteLength,
     width: dims.width,
     height: dims.height,
@@ -317,6 +335,10 @@ async function uploadMedia(body: Record<string, unknown>): Promise<RouteResult> 
     hasTextInFrame: described.hasTextInFrame,
     describedFrom: "IMAGE",
   });
+
+  // `add` is synchronous, so the DynamoDB write is still in flight here.
+  // Replying first would tell the user their photo is stored and then lose it.
+  await media.flush();
 
   return json(200, {
     asset: media.summarise(USER_ID, asset.id),

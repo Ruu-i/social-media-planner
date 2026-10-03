@@ -68,6 +68,7 @@ export interface MediaAsset {
   kind: "IMAGE" | "VIDEO";
   aspectRatio: string;
   durationSeconds: number | null;
+  filename: string;
   description: string;
   tags: string[];
   hasTextInFrame: boolean;
@@ -141,9 +142,18 @@ export const api = {
   createSession: () =>
     fetch(apiUrl("/api/sessions"), { method: "POST" }).then(json<{ sessionId: string }>),
 
+  /** The conversation so far, so a browser reload does not lose it. */
+  messages: (sessionId: string) =>
+    fetch(apiUrl(`/api/sessions/${sessionId}/messages`)).then(
+      json<{ entries: { role: "user" | "assistant"; text: string }[] }>,
+    ),
+
   calendar: () => fetch(apiUrl("/api/calendar")).then(json<{ items: ContentItem[] }>),
 
-  accounts: () => fetch(apiUrl("/api/accounts")).then(json<{ accounts: Account[] }>),
+  accounts: () =>
+    fetch(apiUrl("/api/accounts")).then(
+      json<{ accounts: Account[]; livePublishing: boolean }>,
+    ),
 
   media: () => fetch(apiUrl("/api/media")).then(json<{ assets: MediaAsset[] }>),
 

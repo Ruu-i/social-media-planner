@@ -34,6 +34,16 @@ export interface MediaAsset {
   /** Video only. Drives the 3-90s Reel check and the ~15s Story cap. */
   durationSeconds: number | null;
 
+  /**
+   * What the user called it.
+   *
+   * Kept because a person recognises "roaster-2.jpg" instantly and "4:5
+   * POST/CAROUSEL" not at all. The attachment chip showed only the shape and
+   * the formats it allows, which is what the AGENT needs to know and tells the
+   * user nothing about which photo they just picked.
+   */
+  filename: string;
+
   /** Where the file lives. */
   storageRef: string;
   /**
@@ -64,6 +74,7 @@ export interface MediaAssetSummary {
   kind: MediaKind;
   aspectRatio: AspectRatio;
   durationSeconds: number | null;
+  filename: string;
   description: string;
   tags: string[];
   hasTextInFrame: boolean;

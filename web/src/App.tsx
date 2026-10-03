@@ -14,6 +14,8 @@ export default function App() {
   const [assets, setAssets] = useState<MediaAsset[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [showAccounts, setShowAccounts] = useState(false);
+  const [livePublishing, setLivePublishing] = useState(false);
+  const [confirmPublish, setConfirmPublish] = useState(false);
   const [connectNotice, setConnectNotice] = useState<string | null>(null);
   const [connectOk, setConnectOk] = useState(true);
   /**
@@ -56,16 +58,50 @@ export default function App() {
       setItems(c.items);
       setAssets(m.assets);
       setAccounts(a.accounts);
+      setLivePublishing(a.livePublishing);
     } catch (e) {
       setBootError(e instanceof Error ? e.message : String(e));
     }
   }, []);
 
+  /**
+   * Reuse the previous session instead of minting a new one on every mount.
+   *
+   * A browser reload used to start a fresh conversation, so the history — which
+   * was in the store the whole time — became unreachable, and the agent lost
+   * every reference the user had built up ("this photo", "that post"). From the
+   * user's side it looked like the app had forgotten the last five minutes.
+   *
+   * localStorage because the session id identifies a conversation, not a user,
+   * and carries no privilege: it is the key to a transcript this browser just
+   * created, which is exactly what should survive a refresh.
+   */
   useEffect(() => {
-    api
-      .createSession()
-      .then((s) => setSessionId(s.sessionId))
-      .catch((e) => setBootError(e instanceof Error ? e.message : String(e)));
+    const existing = (() => {
+      try {
+        return localStorage.getItem("sessionId");
+      } catch {
+        // Private browsing and blocked site data both throw here. Losing the
+        // conversation is the old behaviour, not a crash.
+        return null;
+      }
+    })();
+
+    if (existing) {
+      setSessionId(existing);
+    } else {
+      api
+        .createSession()
+        .then((s) => {
+          setSessionId(s.sessionId);
+          try {
+            localStorage.setItem("sessionId", s.sessionId);
+          } catch {
+            /* ignore — the session still works for this page view */
+          }
+        })
+        .catch((e) => setBootError(e instanceof Error ? e.message : String(e)));
+    }
     void refresh();
   }, [refresh]);
 
@@ -176,9 +212,23 @@ export default function App() {
               publisher is, or that running one posts their content.
               Like Approve, it does not go through the agent: there is no
               publish tool, so no amount of prompting can reach this. */}
-          <Tooltip text="Posts anything whose scheduled time has already passed. This also happens automatically every few minutes, so you rarely need it.">
+          <Tooltip
+            text={
+              livePublishing
+                ? "Posts anything whose scheduled time has passed — to your real accounts, immediately."
+                : "Simulates publishing. Nothing is sent to any real account while live publishing is off."
+            }
+          >
             <button
               onClick={async () => {
+                // Ask first when this is real. The action is irreversible and
+                // public: an accidental click would put content on someone's
+                // actual Instagram, which no undo can take back. In mock mode
+                // there is nothing to confirm, so it stays one click.
+                if (livePublishing) {
+                  setConfirmPublish(true);
+                  return;
+                }
                 const { outcomes } = await api.publishDue();
                 setOutcomes(outcomes);
                 void refresh();
@@ -325,12 +375,65 @@ export default function App() {
               onChanged={refresh}
               prompt={agentPrompt}
               onPromptSent={() => setAgentPrompt(null)}
+              onNewChat={() => {
+                // A new conversation, not a new account: the calendar, media
+                // and connections are all server-side and untouched.
+                api
+                  .createSession()
+                  .then((s) => {
+                    try {
+                      localStorage.setItem("sessionId", s.sessionId);
+                    } catch {
+                      /* ignore */
+                    }
+                    setSessionId(s.sessionId);
+                  })
+                  .catch(() => undefined);
+              }}
             />
           ) : (
             <div className="p-4 text-sm text-stone-500">Starting session…</div>
           )}
         </aside>
       </div>
+
+      {confirmPublish && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center bg-stone-900/20 p-4 pt-24 backdrop-blur-sm"
+          onClick={() => setConfirmPublish(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-sm font-semibold text-stone-900">Publish to your real accounts?</h2>
+            <p className="mt-1.5 text-[12px] leading-relaxed text-stone-600">
+              Every approved post whose scheduled time has already passed will be posted now, to
+              the accounts shown in the header. This cannot be undone from here — you would have to
+              delete the posts in Instagram.
+            </p>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setConfirmPublish(false)}
+                className="rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-medium text-stone-600 transition hover:border-stone-300"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  setConfirmPublish(false);
+                  const { outcomes } = await api.publishDue();
+                  setOutcomes(outcomes);
+                  void refresh();
+                }}
+                className="rounded-lg bg-rose-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-rose-500"
+              >
+                Yes, publish now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showAccounts && (
         <Accounts

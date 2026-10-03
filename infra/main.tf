@@ -306,6 +306,7 @@ resource "aws_lambda_function" "api" {
       # OAuth. The app ID is not a secret; the app secret and the state signing
       # key are, and arrive from SSM at cold start rather than living here where
       # console read access would expose them.
+      LIVE_PUBLISHING        = tostring(var.live_publishing)
       INSTAGRAM_APP_ID       = var.instagram_app_id
       OAUTH_SECRET_PREFIX    = var.oauth_secret_prefix
       TOKEN_PARAMETER_PREFIX = var.token_parameter_prefix
@@ -367,6 +368,11 @@ resource "aws_lambda_function" "publisher" {
       DDB_TABLE    = aws_dynamodb_table.main.name
       MEDIA_BUCKET = aws_s3_bucket.media.id
       NODE_OPTIONS = "--enable-source-maps"
+
+      # The worker is what actually posts on a schedule, so it needs the same
+      # switch and the same credentials path as the API.
+      LIVE_PUBLISHING        = tostring(var.live_publishing)
+      TOKEN_PARAMETER_PREFIX = var.token_parameter_prefix
       # No API key and no budget vars: publishing never calls the model. The
       # agent writes the copy; this only delivers what a human already approved.
     }

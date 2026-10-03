@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { buildAttachedPrompt, parseAssetIds } from "../agent/attachments.js";
 import express from "express";
 import cors from "cors";
 
@@ -105,45 +106,8 @@ app.get("/api/sessions/:id/stream", async (req, res) => {
    * same trick the time context uses, and it keeps the reference unambiguous
    * without inventing a tool.
    */
-  const attachedIds = String(req.query.assets ?? "")
-    .split(",")
-    .map((id) => id.trim())
-    .filter(Boolean);
-
-  let prompt = message;
-  if (attachedIds.length > 0) {
-    const lines: string[] = [];
-    for (const id of attachedIds) {
-      const a = media.summarise(USER_ID, id);
-      if (!a) continue;
-      lines.push(
-        `- ${a.assetId} (${a.kind}, ${a.aspectRatio}` +
-          `${a.durationSeconds ? `, ${a.durationSeconds}s` : ""}) ` +
-          `usable as: ${a.suitableFormats.join(", ") || "NOTHING — wrong shape for any format"}
-` +
-          `  ${a.description}` +
-          (a.describedFrom === "NOT_DESCRIBED"
-            ? `
-  NOT DESCRIBED: this is a video and you cannot watch it. You know only its ` +
-              `shape and length. Ask the user what is in it rather than inventing detail, ` +
-              `and say so plainly if you write copy around it.`
-            : ""),
-      );
-    }
-    if (lines.length > 0) {
-      prompt =
-        `<attached_media>
-The user attached these files to this message. When they say ` +
-        `"this", they mean these. Whenever you create or revise content that uses one of ` +
-        `these files, you MUST put its id in that variant's assetIds — otherwise the ` +
-        `content is not actually linked to the file and will publish with nothing attached.
-
-${lines.join("\n")}
-</attached_media>
-
-${message}`;
-    }
-  }
+  const attachedIds = parseAssetIds(String(req.query.assets ?? ""));
+  const prompt = buildAttachedPrompt(media, USER_ID, message, attachedIds);
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",

@@ -2,7 +2,7 @@ import { PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 
 import { key, TABLE_NAME } from "./dynamo-table.js";
-import { seedChannels, seedConnections, seedContent, USER_ID } from "../seed.js";
+import { seedAssets, seedChannels, seedConnections, seedContent, USER_ID } from "../seed.js";
 
 /**
  * Put the demo data in the table, once, if the table is empty.
@@ -54,6 +54,12 @@ export async function ensureSeeded(
 
   for (const channel of seedChannels) {
     await put({ PK: key.user(channel.userId), SK: key.channel(channel.id), ...channel });
+  }
+
+  // The demo library. Without this the calendar seeds but every post refers to
+  // an asset that does not exist, and the media tab is empty.
+  for (const asset of seedAssets()) {
+    await put({ PK: key.user(asset.userId), SK: key.asset(asset.id), ...asset });
   }
 
   for (const item of seedContent()) {

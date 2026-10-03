@@ -103,6 +103,7 @@ export class Publisher {
           externalId: channel.externalId,
           handle: channel.handle,
           media: variant.media,
+          mediaUrls: this.mediaUrlsFor(userId, variant.assetIds),
           caption: variant.caption,
           hashtags: variant.hashtags,
           // Reuse the key the scheduler already committed to. Generating a new
@@ -122,6 +123,26 @@ export class Publisher {
     } catch (error) {
       return await this.handleFailure(variantId, channel.platform, connection.id, error);
     }
+  }
+
+  /**
+   * Resolve assets to addresses the platform can fetch.
+   *
+   * Silently skipping a missing asset would publish a caption with no image —
+   * visibly broken on a real account — so anything unresolvable throws as
+   * PERMANENT instead. Retrying cannot conjure a URL.
+   */
+  private mediaUrlsFor(userId: string, assetIds: string[]): string[] {
+    const media = this.store.mediaStore;
+    if (!media || assetIds.length === 0) return [];
+
+    return assetIds.map((id) => {
+      const asset = media.get(userId, id);
+      if (!asset.publicUrl) {
+        throw new PublishError(`Asset ${id} has no public URL`, "PERMANENT");
+      }
+      return asset.publicUrl;
+    });
   }
 
   private async handleFailure(

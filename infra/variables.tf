@@ -87,6 +87,18 @@ variable "sweep_schedule" {
   default     = "rate(5 minutes)"
 }
 
+# The only switch here with an irreversible, PUBLIC side effect.
+#
+# Off by default and opt-in by name: with this false the publisher runs its
+# whole pipeline against a mock that posts nothing, which is what every test and
+# every demo wants. Setting it true means a scheduled post appears on a real
+# Instagram account, with no undo.
+variable "live_publishing" {
+  description = "Publish to real social accounts. Leave false unless you mean it."
+  type        = bool
+  default     = false
+}
+
 variable "instagram_app_id" {
   description = "Instagram app (client) ID. Not a secret — the app SECRET goes in SSM."
   type        = string

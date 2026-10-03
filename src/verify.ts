@@ -24,6 +24,7 @@ import {
 } from "./budget.js";
 import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta";
 import { MockMetaConnector, MockTokenProvider } from "./connectors/mock.js";
+import { PublishError } from "./connectors/types.js";
 import { Publisher } from "./publisher.js";
 import { StoreError } from "./store/memory.js";
 import { MediaError } from "./store/media.js";
@@ -1040,6 +1041,170 @@ try {
     "clientId falls back to the source IP",
     clientIdOf(event("GET", "/api/calendar")) === "203.0.113.7",
   );
+}
+
+
+// ---------------------------------------------------------------------------
+// The real Instagram connector
+//
+// Every assertion here is about the ERROR MAPPING, because that is what drives
+// publisher policy. A dead token classified TRANSIENT is retried forever; a
+// rate limit classified PERMANENT throws away a perfectly good post. Neither
+// shows up in a happy-path test.
+//
+// `fetch` is stubbed rather than hitting Meta: these must run in CI, offline,
+// and without putting anything on a real account.
+// ---------------------------------------------------------------------------
+{
+  const { InstagramConnector } = await import("./connectors/instagram.js");
+
+  const realFetch = globalThis.fetch;
+  const reply = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+
+  const request = {
+    variantId: "var_x",
+    platform: "instagram" as const,
+    externalId: "17841400000000000",
+    handle: "@test",
+    media: { format: "POST" as const, imageConcept: "A grinder." },
+    mediaUrls: ["https://example.com/a.jpg"],
+    caption: "hello",
+    hashtags: ["coffee"],
+    idempotencyKey: "key-1",
+  };
+
+  const kindOf = async (status: number, body: unknown): Promise<string> => {
+    globalThis.fetch = (async () => reply(status, body)) as typeof fetch;
+    try {
+      await new InstagramConnector(100, 10).publish(request, "tok");
+      return "NO_ERROR";
+    } catch (e) {
+      return e instanceof PublishError ? e.kind : "WRONG_ERROR";
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  };
+
+  check("a revoked token is AUTH", (await kindOf(400, { error: { code: 190 } })) === "AUTH");
+  check(
+    "an app rate limit is RATE_LIMIT",
+    (await kindOf(400, { error: { code: 4 } })) === "RATE_LIMIT",
+  );
+  check("a Meta 5xx is TRANSIENT", (await kindOf(500, { error: { code: 2 } })) === "TRANSIENT");
+  check(
+    "a rejected caption is PERMANENT",
+    (await kindOf(400, { error: { code: 100, message: "caption too long" } })) === "PERMANENT",
+  );
+
+  // Instagram has no text-only post, and saying so beats a Graph API error
+  // about a missing image_url.
+  try {
+    await new InstagramConnector(100, 10).publish({ ...request, mediaUrls: [] }, "tok");
+    check("a post with no media is rejected before any network call", false, "it succeeded");
+  } catch (e) {
+    check(
+      "a post with no media is rejected before any network call",
+      e instanceof PublishError && e.kind === "PERMANENT",
+    );
+  }
+
+  // The happy path: container -> poll -> publish -> permalink.
+  {
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const href = String(url);
+      calls.push(href.split("?")[0]!.replace("https://graph.instagram.com/v23.0/", ""));
+      if (href.includes("media_publish")) return reply(200, { id: "post_1" });
+      if (href.includes("status_code")) return reply(200, { status_code: "FINISHED" });
+      if (href.includes("permalink")) return reply(200, { permalink: "https://instagr.am/p/1" });
+      return reply(200, { id: "container_1" });
+    }) as typeof fetch;
+
+    try {
+      const result = await new InstagramConnector(1000, 10).publish(request, "tok");
+      check("a successful publish returns the platform post id", result.platformPostId === "post_1");
+      check("the permalink is read back", result.permalink === "https://instagr.am/p/1");
+      check(
+        "publishing is container then publish, not one call",
+        calls.length === 4 && calls[2]!.endsWith("/media_publish"),
+        calls.join(" "),
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  // A container stuck IN_PROGRESS must be TRANSIENT: the next sweep retries,
+  // rather than the post being thrown away while Meta was still working.
+  {
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href.includes("status_code")) return reply(200, { status_code: "IN_PROGRESS" });
+      return reply(200, { id: "container_1" });
+    }) as typeof fetch;
+
+    try {
+      await new InstagramConnector(60, 10).publish(request, "tok");
+      check("a container that never finishes is retryable", false, "it succeeded");
+    } catch (e) {
+      check(
+        "a container that never finishes is retryable",
+        e instanceof PublishError && e.kind === "TRANSIENT" && e.retryable,
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  // Media Meta refuses is PERMANENT — the same bytes will fail identically.
+  {
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href.includes("status_code")) {
+        return reply(200, { status_code: "ERROR", status: "Unsupported aspect ratio" });
+      }
+      return reply(200, { id: "container_1" });
+    }) as typeof fetch;
+
+    try {
+      await new InstagramConnector(1000, 10).publish(request, "tok");
+      check("media Meta cannot process is not retried", false, "it succeeded");
+    } catch (e) {
+      check(
+        "media Meta cannot process is not retried",
+        e instanceof PublishError && e.kind === "PERMANENT" && !e.retryable,
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  // Hashtags are not a field on Instagram — they are caption text.
+  {
+    let sentCaption = "";
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes("status_code")) return reply(200, { status_code: "FINISHED" });
+      if (href.includes("media_publish")) return reply(200, { id: "post_1" });
+      if (init?.body) sentCaption = new URLSearchParams(String(init.body)).get("caption") ?? "";
+      return reply(200, { id: "container_1" });
+    }) as typeof fetch;
+
+    try {
+      await new InstagramConnector(1000, 10).publish(request, "tok");
+      check(
+        "hashtags are appended to the caption, since Instagram has no field for them",
+        sentCaption.includes("hello") && sentCaption.includes("#coffee"),
+        sentCaption,
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed  (store: ${STORE_KIND})\n`);

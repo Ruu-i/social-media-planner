@@ -35,12 +35,14 @@ export function Chat({
   onChanged,
   prompt,
   onPromptSent,
+  onNewChat,
 }: {
   sessionId: string;
   onChanged: () => void;
   /** A message pushed in from elsewhere in the app — see App's agentPrompt. */
   prompt?: string | null;
   onPromptSent?: () => void;
+  onNewChat?: () => void;
 }) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [input, setInput] = useState("");
@@ -58,6 +60,40 @@ export function Chat({
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   }, [entries, phase]);
+
+  /**
+   * Rehydrate the conversation for this session.
+   *
+   * Runs once per session id. The server strips the injected time context and
+   * attached-media blocks, so what comes back is what the person actually
+   * typed and what the agent actually said — not the model's working copy.
+   *
+   * Tool calls and thinking are deliberately not restored: they are live
+   * progress indicators for a turn in flight, and replaying them as history
+   * would be noise.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .messages(sessionId)
+      .then(({ entries: prior }) => {
+        if (cancelled || prior.length === 0) return;
+        setEntries(
+          prior.map((e) =>
+            e.role === "user"
+              ? ({ kind: "user", text: e.text } as const)
+              : ({ kind: "assistant", text: e.text } as const),
+          ),
+        );
+      })
+      .catch(() => {
+        // A missing transcript is not an error worth showing — it just means
+        // this is a new conversation.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
 
   /**
    * Send a prompt handed in from another panel.
@@ -172,11 +208,31 @@ export function Chat({
         <span className="ml-auto text-[11px] text-stone-400">
           drafts · revises · schedules
         </span>
+
+        {/* Now that a session survives a reload, there has to be a way OUT of
+            one — otherwise a user is stuck in a single conversation forever,
+            carrying context they no longer want. */}
+        {onNewChat && entries.length > 0 && (
+          <button
+            onClick={onNewChat}
+            title="Start a new conversation. Your calendar and posts are not affected."
+            className="rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[11px] font-medium text-stone-600 transition hover:border-violet-300 hover:text-violet-700"
+          >
+            New chat
+          </button>
+        )}
       </header>
 
-      {/* justify-end is what kills the dead space: a short history sits just
-          above the composer instead of stranded at the top. */}
-      <div className="flex flex-1 flex-col justify-end gap-2.5 overflow-y-auto px-4 py-4">
+      {/* justify-end on a SCROLL CONTAINER is a trap: once the content is taller
+          than the box, the overflow goes out of the TOP where scrolling cannot
+          reach it, so the start of a long conversation becomes unreadable.
+          min-h-0 matters too — a flex child defaults to min-height:auto and
+          refuses to shrink below its content, so the container never overflows
+          and never scrolls.
+          The dead-space fix moves to the inner column, which pushes a SHORT
+          history down without stranding a long one. */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <div className="flex min-h-full flex-col justify-end gap-2.5">
         {entries.map((entry, i) => (
           <Bubble key={i} entry={entry} />
         ))}
@@ -196,6 +252,8 @@ export function Chat({
         <div ref={bottom} />
       </div>
 
+      </div>
+
       <div className="border-t border-stone-200 p-3">
         {/* Attached but not yet sent. Uploading on pick rather than on send
             means the vision pass is already done by the time the agent reads
@@ -207,12 +265,17 @@ export function Chat({
                 key={a.assetId}
                 className="flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 py-1 pr-1 pl-2 text-[11px]"
               >
-                <span className="text-violet-700">
-                  {a.kind === "VIDEO" ? "▶" : "▣"} {a.aspectRatio}
-                  {a.durationSeconds ? ` · ${a.durationSeconds}s` : ""}
+                {/* The NAME first. "4:5 POST/CAROUSEL" is what the agent needs
+                    to know; it tells the person nothing about which photo they
+                    just picked, and reads like a format they are choosing
+                    rather than a file they attached. */}
+                <span className="text-violet-700">{a.kind === "VIDEO" ? "▶" : "▣"}</span>
+                <span className="max-w-40 truncate font-medium text-stone-700">
+                  {a.filename || a.assetId}
                 </span>
-                <span className="max-w-32 truncate text-stone-500">
-                  {a.suitableFormats.join("/") || "unusable shape"}
+                <span className="shrink-0 text-stone-500">
+                  {a.aspectRatio}
+                  {a.durationSeconds ? ` · ${a.durationSeconds}s` : ""}
                 </span>
                 <button
                   onClick={() => setAttached((list) => list.filter((x) => x.assetId !== a.assetId))}
@@ -253,7 +316,7 @@ export function Chat({
             e.preventDefault();
             send(input);
           }}
-          className="flex items-center gap-2"
+          className="flex items-end gap-2"
         >
           <input
             ref={fileInput}
@@ -271,12 +334,35 @@ export function Chat({
           >
             +
           </button>
-          <input
+          {/* A textarea, not an input.
+              A single-line input scrolls sideways as you type, so a request of
+              any length becomes a keyhole showing only the last few words — you
+              cannot read back what you asked before sending it. This grows to
+              fit, then scrolls once it hits 160px. */}
+          <textarea
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            rows={1}
+            onChange={(e) => {
+              setInput(e.target.value);
+              // Reset before measuring: scrollHeight never reports less than
+              // the element's current height, so without this the box can grow
+              // but never shrink back when text is deleted.
+              e.target.style.height = "auto";
+              e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`;
+            }}
+            onKeyDown={(e) => {
+              // Enter sends, Shift+Enter is a newline — the convention in every
+              // chat app. A bare Enter inserting a newline would make the
+              // common case require the mouse.
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send(input);
+                e.currentTarget.style.height = "auto";
+              }
+            }}
             disabled={busy}
             placeholder={busy ? "Working…" : "Ask the agent to plan something"}
-            className="flex-1 rounded-lg border border-stone-300 bg-white px-3 py-2 text-[13px] text-stone-900 outline-none transition placeholder:text-stone-400 focus:border-amber-500 disabled:opacity-50"
+            className="max-h-40 min-h-[38px] flex-1 resize-none rounded-lg border border-stone-300 bg-white px-3 py-2 text-[13px] leading-relaxed text-stone-900 outline-none transition placeholder:text-stone-400 focus:border-amber-500 disabled:opacity-50"
           />
           <button
             type="submit"
@@ -341,7 +427,7 @@ function Bubble({ entry }: { entry: Entry }) {
             {entry.asset.durationSeconds ? ` · ${entry.asset.durationSeconds}s` : ""}
           </span>
           <span className="text-stone-400">
-            {entry.asset.suitableFormats.join("/") || "unusable shape"}
+            {entry.asset.filename || entry.asset.assetId}
           </span>
         </div>
       );

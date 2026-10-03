@@ -5,6 +5,7 @@ import { createConnectionStore, createMediaStore, createSeededStore, profile, US
 import { DynamoStore } from "../store/dynamo.js";
 import { DynamoConnectionStore } from "../store/connections-dynamo.js";
 import { ensureSeeded } from "../store/bootstrap.js";
+import { DynamoMediaStore } from "../store/media-dynamo.js";
 import { MockScheduler } from "../scheduler/mock.js";
 import type { ConnectionStore } from "../store/connections.js";
 import { LocalMediaStorage } from "../media/storage.js";
@@ -17,6 +18,8 @@ import type { OAuthProvider } from "../oauth/types.js";
 import type { Provider } from "../schemas.js";
 import { Publisher } from "../publisher.js";
 import { MockMetaConnector, MockTokenProvider } from "../connectors/mock.js";
+import { InstagramConnector } from "../connectors/instagram.js";
+import { StoredTokenProvider } from "../connectors/tokens.js";
 import {
   DynamoConversationStore,
   MemoryConversationStore,
@@ -45,7 +48,16 @@ import {
  * request instead of depending on a process that survives between them.
  */
 
-const media: MediaStore = createMediaStore();
+/**
+ * The media library.
+ *
+ * In memory this was a per-container Map, so an uploaded photo vanished on the
+ * next request — the upload succeeded, the agent then reported no such asset.
+ */
+const media: MediaStore =
+  process.env.STORE === "dynamo"
+    ? new DynamoMediaStore(createDynamoClient(), USER_ID)
+    : createMediaStore();
 
 /**
  * S3 when a bucket is configured, disk otherwise.
@@ -99,8 +111,16 @@ const store: ContentStore =
  */
 let seeding: Promise<boolean> | null = null;
 
-export function ensureStoreReady(): Promise<boolean> {
-  if (process.env.STORE !== "dynamo") return Promise.resolve(false);
+export async function ensureStoreReady(): Promise<boolean> {
+  if (process.env.STORE !== "dynamo") return false;
+  const seeded = await seedOnce();
+  // AFTER seeding, so the first request sees the demo library rather than an
+  // empty one.
+  await media.refresh();
+  return seeded;
+}
+
+function seedOnce(): Promise<boolean> {
   seeding ??= ensureSeeded(createDynamoClient()).catch((error) => {
     // Never fatal. A failed seed leaves an empty calendar, which is survivable;
     // taking every route down because the demo content could not be written is
@@ -111,9 +131,29 @@ export function ensureStoreReady(): Promise<boolean> {
   return seeding;
 }
 
-const publisher = new Publisher(store, new MockTokenProvider(), [
-  new MockMetaConnector(() => {}),
-]);
+/**
+ * Real publishing, or a mock that posts nothing.
+ *
+ * Gated on LIVE_PUBLISHING rather than on STORE or NODE_ENV, because this is
+ * the one switch in the system with an irreversible side effect: the wrong
+ * default here puts content on somebody's actual Instagram account. It is
+ * therefore opt-in, by name, and off everywhere until explicitly set.
+ *
+ * The mock is not a lesser version — it fails in all four realistic ways, which
+ * is how the publisher's retry and reauth policy got tested without a single
+ * real post.
+ */
+const livePublishing = process.env.LIVE_PUBLISHING === "true";
+
+const tokenProvider = livePublishing
+  ? new StoredTokenProvider(connectionStore, createTokenStore(), USER_ID)
+  : new MockTokenProvider();
+
+const publisher = new Publisher(
+  store,
+  tokenProvider,
+  livePublishing ? [new InstagramConnector()] : [new MockMetaConnector(() => {})],
+);
 
 /**
  * In Lambda this must be DynamoDB — there is no process to hold a Map. Locally
@@ -186,4 +226,4 @@ export const connectService = new ConnectService(
   oauthProviders,
 );
 
-export { store, media, storage, publisher, conversations, USER_ID };
+export { store, media, storage, publisher, conversations, livePublishing, USER_ID };

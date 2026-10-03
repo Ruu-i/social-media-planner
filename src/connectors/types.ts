@@ -21,6 +21,15 @@ export interface PublishRequest {
   externalId: string;
   handle: string;
   media: MediaSpec;
+  /**
+   * Publicly reachable URLs for the media, in order.
+   *
+   * URLs, not bytes, because Meta does not accept an upload — you hand it an
+   * address and it fetches. An asset behind a private bucket or a localhost URL
+   * is therefore unpublishable no matter how good the photo is, which is why
+   * the media bucket is public-read.
+   */
+  mediaUrls: string[];
   caption: string;
   hashtags: string[];
   /**

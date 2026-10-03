@@ -1,7 +1,8 @@
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-import { agentFor, spendGuard } from "../server/sessions.js";
+import { agentFor, media, spendGuard, USER_ID } from "../server/sessions.js";
+import { buildAttachedPrompt, parseAssetIds } from "../agent/attachments.js";
 import { ensureApiKey } from "../agent/provider.js";
 import { clientIdOf, isStreamRoute, route, type RouteResult } from "./router.js";
 import type { FunctionUrlEvent, ResponseStream } from "./runtime.js";
@@ -51,6 +52,12 @@ async function streamTurn(
 ): Promise<void> {
   const params = new URLSearchParams(event.rawQueryString ?? "");
   const message = (params.get("q") ?? "").trim();
+
+  // The browser sends attached assets as ?assets=id,id. This was read by the
+  // Express dev server and NOT here, so attachments worked locally and were
+  // silently dropped in production — the agent got "use this photo" with no
+  // photo, asked which one, and nothing ever looked like an error.
+  const assetIds = parseAssetIds(params.get("assets"));
 
   if (!message) {
     return await writeJson(raw, {
@@ -128,7 +135,7 @@ async function streamTurn(
     // conversation store, which is what makes this work across cold starts.
     const agent = agentFor(sessionId);
 
-    const result = await agent.send(message, {
+    const result = await agent.send(buildAttachedPrompt(media, USER_ID, message, assetIds), {
       onToolCall: (name) => send("tool", { name }),
       onThinking: (delta) => send("thinking", { delta }),
       onWriting: () => send("writing", {}),

@@ -35,6 +35,7 @@ export interface NewAsset {
   width: number;
   height: number;
   durationSeconds?: number | null;
+  filename?: string;
   storageRef: string;
   publicUrl: string;
   description: string;
@@ -44,7 +45,23 @@ export interface NewAsset {
 }
 
 export class MediaStore {
-  private assets = new Map<string, MediaAsset>();
+  protected assets = new Map<string, MediaAsset>();
+
+  /** Replace the whole library. For a persisted subclass reloading its rows. */
+  protected replaceAll(assets: MediaAsset[]): void {
+    this.assets = new Map(assets.map((a) => [a.id, a]));
+  }
+
+  /** Read without the ownership check, for a subclass writing a row back. */
+  protected peek(assetId: string): MediaAsset | undefined {
+    return this.assets.get(assetId);
+  }
+
+  /** Overridden by persisted stores; a no-op in memory. */
+  async refresh(): Promise<void> {}
+
+  /** Overridden by persisted stores; a no-op in memory. */
+  async flush(): Promise<void> {}
 
   constructor(seed: MediaAsset[] = []) {
     for (const a of seed) this.assets.set(a.id, a);
@@ -56,6 +73,9 @@ export class MediaStore {
       id: `asset_${randomUUID().slice(0, 8)}`,
       aspectRatio: aspectRatioOf(input.width, input.height),
       durationSeconds: input.durationSeconds ?? null,
+      // Seeded assets predate this field; name them after their id rather than
+      // rendering "undefined" in the library.
+      filename: input.filename ?? `${input.storageRef.split("/").pop() ?? "upload"}`,
       hasTextInFrame: input.hasTextInFrame ?? false,
       describedFrom: input.describedFrom ?? "IMAGE",
       uploadedAt: new Date().toISOString(),
@@ -174,6 +194,7 @@ export class MediaStore {
       kind: a.kind,
       aspectRatio: a.aspectRatio,
       durationSeconds: a.durationSeconds,
+      filename: a.filename,
       description: a.description,
       tags: a.tags,
       hasTextInFrame: a.hasTextInFrame,
