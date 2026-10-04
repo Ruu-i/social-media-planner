@@ -143,3 +143,41 @@ variable "enable_pitr" {
   type        = bool
   default     = false
 }
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+
+variable "ui_base_url" {
+  description = "Where the UI is served from. Cognito redirects back here after sign-in."
+  type        = string
+  default     = "https://d252um6eslhku1.cloudfront.net"
+}
+
+# Social sign-in is optional — email works without any of this. Each provider
+# appears on the hosted sign-in page only when its credentials are set.
+variable "google_client_id" {
+  description = "Google OAuth client id. Empty disables Google sign-in."
+  type        = string
+  default     = ""
+}
+
+variable "google_client_secret" {
+  description = "Google OAuth client secret."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "facebook_app_id" {
+  description = "Meta app id for Facebook sign-in. Empty disables it."
+  type        = string
+  default     = ""
+}
+
+variable "facebook_app_secret" {
+  description = "Meta app secret for Facebook sign-in."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

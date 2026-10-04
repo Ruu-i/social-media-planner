@@ -10,11 +10,11 @@ import {
   spendGuard,
   store,
   storage,
-  USER_ID,
 } from "../server/sessions.js";
 import { describeImage, canDescribe } from "../media/describe.js";
 import { ensureApiKey } from "../agent/provider.js";
 import { suitableFormats } from "../media/types.js";
+import { AuthError, authEnabled, authenticate } from "../auth/user.js";
 import { ensureOAuthSecrets } from "../oauth/secrets.js";
 import { toTranscript } from "../agent/transcript.js";
 import { OAuthError } from "../oauth/types.js";
@@ -67,6 +67,10 @@ const json = (statusCode: number, body: unknown): JsonResult => ({
 });
 
 export function errorResult(error: unknown): JsonResult {
+  // 401 so the UI can tell "sign in again" apart from "that failed".
+  if (error instanceof AuthError) {
+    return json(401, { error: "UNAUTHENTICATED", message: error.message });
+  }
   if (error instanceof OAuthError) {
     // NOT_CONFIGURED is 503 rather than 500: the app is fine, this provider
     // just has not been set up yet, and the distinction is the difference
@@ -134,10 +138,81 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
   const method = event.requestContext.http.method;
   const path = event.rawPath;
 
+  // The ONE route that must answer without a token: it is what tells the
+  // browser whether a token is needed and where to get one. Placed before
+  // authenticate() deliberately, and it returns nothing that is not already
+  // public — a pool id and a client id are in every sign-in URL.
+  if (method === "GET" && path === "/api/config") {
+    return json(200, {
+      authEnabled: authEnabled(),
+      cognito: {
+        domain: process.env.COGNITO_DOMAIN ?? "",
+        clientId: process.env.COGNITO_CLIENT_ID ?? "",
+        // Only the social providers actually wired up. Offering one that is not
+        // configured sends the user to a Cognito error page that reads like the
+        // app is broken rather than unfinished.
+        providers: (process.env.COGNITO_PROVIDERS ?? "")
+          .split(",")
+          .map((p) => p.trim())
+          .filter(Boolean),
+      },
+      uiBase: process.env.PUBLIC_UI_BASE ?? "",
+    });
+  }
+
+  /**
+   * The OAuth callback, which CANNOT carry a bearer token.
+   *
+   * Instagram finishes the grant by navigating the browser here. A top-level
+   * navigation sends no Authorization header — there is no JavaScript involved
+   * — so requiring one rejected every successful connection with
+   * "Sign in to continue" after the user had already approved it.
+   *
+   * The `state` parameter is what authenticates this request instead: it is
+   * HMAC-signed with a server-side secret and carries both the userId and an
+   * expiry, so it cannot be forged or replayed past its window. That is the
+   * standard OAuth answer to exactly this problem, and the reason state was
+   * signed rather than stored in the first place.
+   */
+  const oauthCallback = /^\/api\/connect\/([^/]+)\/callback$/.exec(path);
+  if (method === "GET" && oauthCallback) {
+    try {
+      await ensureOAuthSecrets();
+      const provider = oauthCallback[1] as Provider;
+      const params = new URLSearchParams(event.rawQueryString ?? "");
+
+      // The user declined, or the provider refused. Not an error on our side.
+      const denied = params.get("error");
+      if (denied) {
+        return redirectToUi(`connected=0&reason=${encodeURIComponent(denied)}`);
+      }
+
+      const result = await connectService.callback(
+        provider,
+        params.get("code") ?? "",
+        params.get("state") ?? "",
+        redirectUriFor(event, provider),
+      );
+      return redirectToUi(`connected=1&handle=${encodeURIComponent(result.handles[0] ?? "")}`);
+    } catch (error) {
+      // Back to the UI with a readable reason rather than raw JSON: the user is
+      // looking at a browser tab they were redirected into.
+      const message = error instanceof Error ? error.message : "Could not connect";
+      return redirectToUi(`connected=0&reason=${encodeURIComponent(message)}`);
+    }
+  }
+
   try {
-    // The table is seeded on the first request that finds it empty. Awaited
-    // here rather than per-route so no route can forget.
-    await ensureStoreReady();
+    // WHO, before anything else.
+    //
+    // Every route below reads or writes somebody's data, so the identity has to
+    // be established before any of them run — not checked route by route, where
+    // one omission is a data leak.
+    const { userId } = await authenticate(event);
+
+    // Seeded per user on their first request. Awaited here rather than
+    // per-route so no route can forget.
+    await ensureStoreReady(userId);
 
     if (method === "POST" && path === "/api/sessions") {
       return json(200, { sessionId: createSession() });
@@ -148,11 +223,15 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
     // for it.
     const messages = /^\/api\/sessions\/([^/]+)\/messages$/.exec(path);
     if (method === "GET" && messages) {
-      return json(200, { entries: toTranscript(await conversations.load(messages[1]!)) });
+      // Same scoping as the agent uses, so a session id from another account
+      // simply finds nothing rather than returning their conversation.
+      return json(200, {
+        entries: toTranscript(await conversations.load(`${userId}:${messages[1]!}`)),
+      });
     }
 
     if (method === "GET" && path === "/api/profile") {
-      return json(200, { profile: await store.getBusinessProfile(USER_ID) });
+      return json(200, { profile: await store.getBusinessProfile(userId) });
     }
 
     if (method === "PATCH" && path === "/api/profile") {
@@ -195,16 +274,16 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
         return json(400, { error: "INVALID_INPUT", message: "Nothing to change" });
       }
 
-      return json(200, { profile: await store.updateBusinessProfile(USER_ID, changes) });
+      return json(200, { profile: await store.updateBusinessProfile(userId, changes) });
     }
 
     if (method === "GET" && path === "/api/calendar") {
-      return json(200, { items: await store.getCalendar(USER_ID) });
+      return json(200, { items: await store.getCalendar(userId) });
     }
 
     if (method === "GET" && path === "/api/accounts") {
       return json(200, {
-        accounts: await store.getConnectedAccounts(USER_ID),
+        accounts: await store.getConnectedAccounts(userId),
         // The UI needs to know whether publishing is real before it offers a
         // button that posts. Reported by the server rather than guessed from a
         // build flag, because the two can disagree.
@@ -230,18 +309,18 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
     }
 
     if (method === "GET" && path === "/api/media") {
-      return json(200, { assets: media.search(USER_ID, { limit: 100 }) });
+      return json(200, { assets: media.search(userId, { limit: 100 }) });
     }
 
     const item = /^\/api\/items\/([^/]+)$/.exec(path);
     if (method === "GET" && item) {
-      return json(200, { item: await store.getItem(USER_ID, item[1]!) });
+      return json(200, { item: await store.getItem(userId, item[1]!) });
     }
 
     const approve = /^\/api\/variants\/([^/]+)\/approve$/.exec(path);
     if (method === "POST" && approve) {
       // The human gate. Straight to the store — no tool reaches this code.
-      return json(200, { variant: await store.humanApprove(USER_ID, approve[1]!) });
+      return json(200, { variant: await store.humanApprove(userId, approve[1]!) });
     }
 
     // Direct editing, bypassing the agent — for a typo, a wrong price, a name
@@ -272,7 +351,7 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
       if (Object.keys(changes).length === 0) {
         return json(400, { error: "INVALID_INPUT", message: "Nothing to change" });
       }
-      return json(200, { variant: await store.updateVariant(USER_ID, edit[1]!, changes) });
+      return json(200, { variant: await store.updateVariant(userId, edit[1]!, changes) });
     }
 
     // Scheduling, without the agent.
@@ -292,13 +371,13 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
       }
       const variantId = schedule[1]!;
       return json(200, {
-        variant: await store.scheduleVariant(USER_ID, variantId, when, `ui-${variantId}-${when}`),
+        variant: await store.scheduleVariant(userId, variantId, when, `ui-${variantId}-${when}`),
       });
     }
 
     const cancel = /^\/api\/variants\/([^/]+)\/cancel$/.exec(path);
     if (method === "POST" && cancel) {
-      return json(200, { variant: await store.cancelVariant(USER_ID, cancel[1]!) });
+      return json(200, { variant: await store.cancelVariant(userId, cancel[1]!) });
     }
 
     if (method === "GET" && path === "/api/connections") {
@@ -306,7 +385,7 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
       // unconfigured on a cold start and the UI greys out a working button.
       await ensureOAuthSecrets();
       return json(200, {
-        connections: (await store.connectionStore.listConnections(USER_ID)).map((c) => ({
+        connections: (await store.connectionStore.listConnections(userId)).map((c) => ({
           // Deliberately lossy, exactly like the agent's channel view:
           // tokenRef and scopes never leave the server.
           id: c.id,
@@ -327,52 +406,25 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
       // explicit click, and a misconfigured provider surfaces as a readable
       // message instead of a redirect to an error page.
       return json(200, {
-        url: connectService.start(USER_ID, provider, redirectUriFor(event, provider)),
+        url: connectService.start(userId, provider, redirectUriFor(event, provider)),
       });
-    }
-
-    const callback = /^\/api\/connect\/([^/]+)\/callback$/.exec(path);
-    if (method === "GET" && callback) {
-      await ensureOAuthSecrets();
-      const provider = callback[1] as Provider;
-      const params = new URLSearchParams(event.rawQueryString ?? "");
-
-      // The user declined, or the provider refused. Not an error on our side.
-      const denied = params.get("error");
-      if (denied) {
-        return redirectToUi(`connected=0&reason=${encodeURIComponent(denied)}`);
-      }
-
-      const result = await connectService.callback(
-        provider,
-        params.get("code") ?? "",
-        params.get("state") ?? "",
-        redirectUriFor(event, provider),
-      );
-      return redirectToUi(`connected=1&handle=${encodeURIComponent(result.handles[0] ?? "")}`);
-    }
-
-    const verify = /^\/api\/connections\/([^/]+)\/verify$/.exec(path);
-    if (method === "POST" && verify) {
-      await ensureOAuthSecrets();
-      return json(200, await connectService.verify(USER_ID, verify[1]!));
     }
 
     const disconnect = /^\/api\/connections\/([^/]+)\/disconnect$/.exec(path);
     if (method === "POST" && disconnect) {
-      await connectService.disconnect(USER_ID, disconnect[1]!);
+      await connectService.disconnect(userId, disconnect[1]!);
       return json(200, { disconnected: true });
     }
 
     if (method === "POST" && path === "/api/publish/run") {
       // Stands in for the EventBridge timer. Also unreachable by the agent.
-      return json(200, { outcomes: await publisher.publishDue(USER_ID) });
+      return json(200, { outcomes: await publisher.publishDue(userId) });
     }
 
     const file = /^\/api\/media\/([^/]+)\/file$/.exec(path);
     if (method === "GET" && file) {
       try {
-        const asset = media.get(USER_ID, file[1]!);
+        const asset = media.get(userId, file[1]!);
         return {
           kind: "binary",
           statusCode: 200,
@@ -387,15 +439,15 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
     }
 
     if (method === "POST" && path === "/api/media/upload-url") {
-      return await presignUpload(bodyOf(event));
+      return await presignUpload(userId, bodyOf(event));
     }
 
     if (method === "POST" && path === "/api/media/register") {
-      return await registerUploaded(bodyOf(event));
+      return await registerUploaded(userId, bodyOf(event));
     }
 
     if (method === "POST" && path === "/api/media") {
-      return await uploadMedia(bodyOf(event));
+      return await uploadMedia(userId, bodyOf(event));
     }
 
     return json(404, { error: "NOT_FOUND", message: `No route for ${method} ${path}` });
@@ -411,7 +463,10 @@ export async function route(event: FunctionUrlEvent): Promise<RouteResult> {
  * upload — never on a planning turn. That is the whole media cost strategy: a
  * photo is ~1,500 tokens, so describing per plan would be ruinous.
  */
-async function uploadMedia(body: Record<string, unknown>): Promise<RouteResult> {
+async function uploadMedia(
+  userId: string,
+  body: Record<string, unknown>,
+): Promise<RouteResult> {
   const { filename, dataBase64 } = body;
   if (typeof filename !== "string" || typeof dataBase64 !== "string") {
     return json(400, {
@@ -432,16 +487,16 @@ async function uploadMedia(body: Record<string, unknown>): Promise<RouteResult> 
   await ensureApiKey();
 
   const data = Buffer.from(dataBase64, "base64");
-  const profile = await store.getBusinessProfile(USER_ID);
+  const profile = await store.getBusinessProfile(userId);
   const described = await describeImage(data, mimeType, {
     businessName: profile.businessName,
     industry: profile.industry,
   });
   const dims = imageSize(data) ?? { width: 1080, height: 1080 };
-  const stored = await storage.put(USER_ID, filename, data);
+  const stored = await storage.put(userId, filename, data);
 
   const asset = media.add({
-    userId: USER_ID,
+    userId: userId,
     kind: "IMAGE",
     mimeType,
     filename,
@@ -461,7 +516,7 @@ async function uploadMedia(body: Record<string, unknown>): Promise<RouteResult> 
   await media.flush();
 
   return json(200, {
-    asset: media.summarise(USER_ID, asset.id),
+    asset: media.summarise(userId, asset.id),
     quality: described.quality,
     suitableFormats: suitableFormats(asset),
   });
@@ -487,13 +542,20 @@ function redirectUriFor(event: FunctionUrlEvent, provider: string): string {
   return `${base}/api/connect/${provider}/callback`;
 }
 
-/** Hand the browser back to the SPA after the round trip. */
+/**
+ * Hand the browser back to the PLANNER after the round trip.
+ *
+ * `/app`, not `/`. This was written when the app lived at the root; once a
+ * landing page took that path, a successful connection dropped the user on the
+ * marketing page with the result in the query string and nothing to read it —
+ * so connecting looked like it had failed and thrown them out.
+ */
 function redirectToUi(query: string): RouteResult {
-  const ui = (process.env.PUBLIC_UI_BASE ?? "/").replace(/\/$/, "");
+  const ui = (process.env.PUBLIC_UI_BASE ?? "").replace(/\/$/, "");
   return {
     kind: "redirect",
     statusCode: 302,
-    location: `${ui}/?${query}`,
+    location: `${ui}/app?${query}`,
   };
 }
 
@@ -510,7 +572,10 @@ const VIDEO_TYPES: Record<string, string> = {
  * Only the metadata comes back through this app. That is what makes video
  * possible at all — the bytes never enter a Lambda request.
  */
-async function presignUpload(body: Record<string, unknown>): Promise<RouteResult> {
+async function presignUpload(
+  userId: string,
+  body: Record<string, unknown>,
+): Promise<RouteResult> {
   const { filename } = body;
   if (typeof filename !== "string" || !filename.trim()) {
     return json(400, { error: "INVALID_INPUT", message: "filename is required" });
@@ -536,7 +601,7 @@ async function presignUpload(body: Record<string, unknown>): Promise<RouteResult
     storage as unknown as {
       presignPut: (u: string, f: string, c: string) => Promise<Record<string, string>>;
     }
-  ).presignPut(USER_ID, filename, contentType);
+  ).presignPut(userId, filename, contentType);
 
   return json(200, { ...signed, contentType });
 }
@@ -549,7 +614,10 @@ async function presignUpload(body: Record<string, unknown>): Promise<RouteResult
  * the other fourteen seconds. The USER describes it instead, which is both
  * cheaper and more accurate — they were there.
  */
-async function registerUploaded(body: Record<string, unknown>): Promise<RouteResult> {
+async function registerUploaded(
+  userId: string,
+  body: Record<string, unknown>,
+): Promise<RouteResult> {
   const { filename, storageRef, publicUrl, description } = body;
   if (typeof filename !== "string" || typeof storageRef !== "string" || typeof publicUrl !== "string") {
     return json(400, {
@@ -577,7 +645,7 @@ async function registerUploaded(body: Record<string, unknown>): Promise<RouteRes
   const durationSeconds = isVideo ? Math.round(Number(body.durationSeconds) || 0) : null;
 
   const asset = media.add({
-    userId: USER_ID,
+    userId: userId,
     kind: isVideo ? "VIDEO" : "IMAGE",
     mimeType,
     filename,
@@ -596,7 +664,7 @@ async function registerUploaded(body: Record<string, unknown>): Promise<RouteRes
   await media.flush();
 
   return json(200, {
-    asset: media.summarise(USER_ID, asset.id),
+    asset: media.summarise(userId, asset.id),
     suitableFormats: suitableFormats(asset),
   });
 }

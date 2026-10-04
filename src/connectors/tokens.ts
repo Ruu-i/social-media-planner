@@ -18,11 +18,10 @@ export class StoredTokenProvider implements TokenProvider {
   constructor(
     private connections: ConnectionStore,
     private tokens: TokenStore,
-    private userId: string,
   ) {}
 
-  async getAccessToken(connectionId: string): Promise<string> {
-    const connection = (await this.connections.listConnections(this.userId)).find(
+  async getAccessToken(userId: string, connectionId: string): Promise<string> {
+    const connection = (await this.connections.listConnections(userId)).find(
       (c) => c.id === connectionId,
     );
     if (!connection) throw new Error(`No connection ${connectionId}`);

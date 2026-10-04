@@ -42,3 +42,12 @@ output "next_steps" {
 
   EOT
 }
+
+output "cognito" {
+  description = "What the UI needs to send users to the hosted sign-in page."
+  value = {
+    user_pool_id = aws_cognito_user_pool.users.id
+    client_id    = aws_cognito_user_pool_client.web.id
+    domain       = "https://${aws_cognito_user_pool_domain.users.domain}.auth.${var.region}.amazoncognito.com"
+  }
+}

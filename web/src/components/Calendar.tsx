@@ -24,11 +24,15 @@ export function Calendar({
   assets,
   onChanged,
   onAskAgent,
+  hasAccounts = false,
+  profileSet = false,
 }: {
   items: ContentItem[];
   assets: MediaAsset[];
   onChanged: () => void;
   onAskAgent: (text: string) => void;
+  hasAccounts?: boolean;
+  profileSet?: boolean;
 }) {
   const [filter, setFilter] = useState<Format | "ALL">("ALL");
 
@@ -42,14 +46,66 @@ export function Calendar({
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
 
   if (items.length === 0) {
+    // A new account starts genuinely empty, so this is the first thing most
+    // people ever see. It has to say what to DO, in order, rather than state
+    // that there is nothing here — which they can already tell.
+    const steps = [
+      {
+        n: 1,
+        title: "Connect an account",
+        body: "Instagram, from the Accounts button above. The agent plans for the accounts you connect.",
+        done: hasAccounts,
+      },
+      {
+        n: 2,
+        title: "Tell it about your business",
+        body: "Open Business and set your name, tone and the themes you post about. Everything it writes comes from this.",
+        done: profileSet,
+      },
+      {
+        n: 3,
+        title: "Ask for a week",
+        body: '"Plan 3 posts for next week" - or attach a photo and ask it to build something around that.',
+        done: false,
+      },
+    ];
+
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 p-12 text-center">
-        <div className="mb-1 h-10 w-10 rounded-xl border border-dashed border-violet-300" />
-        <p className="text-sm font-medium text-stone-700">Nothing planned yet</p>
-        <p className="max-w-xs text-xs text-stone-500">
-          Ask the agent to plan a week. It will read what is already scheduled before it writes
-          anything.
-        </p>
+      <div className="flex h-full items-start justify-center p-10">
+        <div className="w-full max-w-md">
+          <h2 className="text-[17px] font-semibold text-stone-900">Let's get you started</h2>
+          <p className="mt-1 text-[12.5px] text-stone-600">
+            Three things, and the agent can take it from there.
+          </p>
+
+          <ol className="mt-6 space-y-3">
+            {steps.map((s) => (
+              <li
+                key={s.n}
+                className={`flex gap-3.5 rounded-xl border p-4 ${
+                  s.done ? "border-emerald-200 bg-emerald-50/50" : "border-stone-200 bg-white"
+                }`}
+              >
+                <span
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
+                    s.done ? "bg-emerald-500 text-white" : "bg-violet-100 text-violet-700"
+                  }`}
+                >
+                  {s.done ? "✓" : s.n}
+                </span>
+                <div>
+                  <p className="text-[13px] font-semibold text-stone-900">{s.title}</p>
+                  <p className="mt-0.5 text-[12px] leading-relaxed text-stone-600">{s.body}</p>
+                </div>
+              </li>
+            ))}
+          </ol>
+
+          <p className="mt-6 text-[11.5px] leading-relaxed text-stone-500">
+            Nothing is ever posted without you approving it first - the agent has no way to
+            publish on its own.
+          </p>
+        </div>
       </div>
     );
   }
@@ -87,7 +143,7 @@ export function Calendar({
     if (statuses.some((s) => s === "APPROVED")) return 1;
     if (statuses.some((s) => s === "FAILED")) return 2;
     if (statuses.some((s) => s === "SCHEDULED")) return 3;
-    return 4; // published, cancelled — done with
+    return 4; // published, cancelled - done with
   };
 
   const timeOf = (item: ContentItem): string =>
@@ -451,7 +507,7 @@ function VariantRow({
                   className="w-full rounded-lg border border-stone-300 bg-white px-2.5 py-1.5 text-[11px] text-sky-700 outline-none focus:border-violet-400"
                 />
                 <p className="text-[11px] text-amber-700">
-                  Editing the words withdraws your approval — you will need to approve it again.
+                  Editing the words withdraws your approval - you will need to approve it again.
                 </p>
                 <div className="flex items-center gap-2">
                   <button
@@ -542,7 +598,7 @@ function VariantRow({
 
           <div className="grid gap-1 text-[11px] text-stone-500">
             <p className="text-[10px] font-semibold tracking-wide text-stone-400 uppercase">
-              Planning notes — not published
+              Planning notes - not published
             </p>
             <p>
               <span className="font-medium text-stone-600">Goal </span>
@@ -592,7 +648,7 @@ function VariantRow({
             {missingMedia &&
               (variant.status === "PENDING_APPROVAL" || variant.status === "DRAFT") && (
                 <span className="text-[11px] font-medium text-amber-700">
-                  Attach a {variant.media.format === "REEL" ? "video" : "photo"} before approving —
+                  Attach a {variant.media.format === "REEL" ? "video" : "photo"} before approving -
                   Instagram cannot publish text on its own.
                 </span>
               )}
@@ -755,7 +811,7 @@ function mediaLine(v: Variant): string {
     case "POST":
       return m.imageConcept ?? "";
     case "CAROUSEL":
-      return `${m.cards?.length ?? 0} cards — ${m.cards?.[0] ?? ""}`;
+      return `${m.cards?.length ?? 0} cards - ${m.cards?.[0] ?? ""}`;
     case "REEL":
       return `${m.durationSeconds}s · cover: ${m.coverFrame}`;
     case "STORY":

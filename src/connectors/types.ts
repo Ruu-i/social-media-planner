@@ -82,5 +82,10 @@ export interface SocialConnector {
  * and the store never see it.
  */
 export interface TokenProvider {
-  getAccessToken(connectionId: string): Promise<string>;
+  /**
+   * The userId is passed because connections are per-user and a connectionId
+   * alone cannot be resolved safely — looking one up without knowing whose it
+   * is would let any id reach any account's token.
+   */
+  getAccessToken(userId: string, connectionId: string): Promise<string>;
 }

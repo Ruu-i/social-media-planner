@@ -84,8 +84,18 @@ export class ContentAgent {
   ) {}
 
   /** The session key history is stored under. */
+  /**
+   * Scoped by USER, not just by session.
+   *
+   * This was the session id alone. Session ids are random, but nothing stopped
+   * one user's id from addressing another user's conversation — and the browser
+   * kept its id in localStorage across sign-ins, so a second person signing in
+   * on the same machine opened the first person's chat and read it.
+   *
+   * Prefixing with the userId makes a borrowed session id resolve to nothing.
+   */
   private get conversationId(): string {
-    return this.session.sessionId ?? this.session.userId;
+    return `${this.session.userId}:${this.session.sessionId ?? "default"}`;
   }
 
   async history(): Promise<readonly BetaMessageParam[]> {

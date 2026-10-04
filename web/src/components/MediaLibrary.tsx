@@ -81,7 +81,7 @@ export function MediaLibrary({
               Drop a photo, or click to choose
             </p>
             <p className="mt-0.5 text-[11px] text-stone-500">
-              Described once on upload — never on every plan
+              Described once on upload - never on every plan
             </p>
           </>
         )}
@@ -96,7 +96,7 @@ export function MediaLibrary({
       {justAdded && (
         <div className="animate-fade-up rounded-xl border border-emerald-200 bg-emerald-50 p-3">
           <p className="text-[11px] font-semibold text-emerald-700">
-            Described — the agent can find this photo now
+            Described - the agent can find this photo now
           </p>
           <p className="mt-1 text-[13px] text-stone-700">
             {justAdded.description}

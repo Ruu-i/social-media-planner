@@ -327,6 +327,20 @@ resource "aws_lambda_function" "api" {
       # key are, and arrive from SSM at cold start rather than living here where
       # console read access would expose them.
       LIVE_PUBLISHING        = tostring(var.live_publishing)
+      # Authentication. With these absent the API falls back to a single demo
+      # user — which is how local development and the tests run, and why the
+      # fallback keys on configuration being absent rather than on a flag.
+      COGNITO_USER_POOL_ID = aws_cognito_user_pool.users.id
+      COGNITO_CLIENT_ID    = aws_cognito_user_pool_client.web.id
+      COGNITO_DOMAIN       = "https://${aws_cognito_user_pool_domain.users.domain}.auth.${var.region}.amazoncognito.com"
+      # Which social buttons the UI should offer. A button for a provider that
+      # is not configured sends the user to Cognito's "Login option is not
+      # available" page, which looks like the app is broken.
+      COGNITO_PROVIDERS = join(",", compact([
+        var.google_client_id != "" ? "Google" : "",
+        var.facebook_app_id != "" ? "Facebook" : "",
+      ]))
+
       INSTAGRAM_APP_ID       = var.instagram_app_id
       OAUTH_SECRET_PREFIX    = var.oauth_secret_prefix
       TOKEN_PARAMETER_PREFIX = var.token_parameter_prefix
@@ -446,7 +460,10 @@ resource "aws_lambda_function_url" "api" {
     # OPTIONS. Without it the browser blocks the edit request at preflight.
     allow_methods = ["GET", "POST", "PATCH"]
 
-    allow_headers = ["content-type"]
+    # authorization is NOT optional now that every request carries a token:
+    # a header the browser is not told it may send fails at preflight, and the
+    # app shows "Failed to fetch" with no clue that CORS is the cause.
+    allow_headers = ["content-type", "authorization"]
     max_age       = 3600
   }
 }
@@ -581,5 +598,122 @@ resource "aws_budgets_budget" "monthly" {
     threshold_type             = "PERCENTAGE"
     notification_type          = "ACTUAL"
     subscriber_email_addresses = [var.budget_email]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Cognito — who the user is
+#
+# The app had no authentication at all: USER_ID was a constant, so every
+# visitor was the same user and anyone with the URL saw the owner's connected
+# Instagram account and could publish to it. Single-user was a reasonable shape
+# for a local demo and indefensible for a public one.
+#
+# Cognito rather than rolling sessions: it is managed, free to 50k monthly
+# users, and gives Google and Facebook sign-in without this app ever handling a
+# password or a third-party token exchange.
+# ---------------------------------------------------------------------------
+
+resource "aws_cognito_user_pool" "users" {
+  name = "${local.name}-users"
+
+  username_attributes      = ["email"]
+  auto_verified_attributes = ["email"]
+
+  password_policy {
+    minimum_length    = 8
+    require_lowercase = true
+    require_numbers   = true
+    require_uppercase = false
+    require_symbols   = false
+  }
+
+  account_recovery_setting {
+    recovery_mechanism {
+      name     = "verified_email"
+      priority = 1
+    }
+  }
+}
+
+# A hosted sign-in page, so this app never sees a password.
+resource "aws_cognito_user_pool_domain" "users" {
+  domain       = "${local.name}-${data.aws_caller_identity.current.account_id}"
+  user_pool_id = aws_cognito_user_pool.users.id
+}
+
+resource "aws_cognito_user_pool_client" "web" {
+  name         = "${local.name}-web"
+  user_pool_id = aws_cognito_user_pool.users.id
+
+  # No secret: this runs in a browser, where a secret cannot be kept.
+  # PKCE covers what the secret would have.
+  generate_secret = false
+
+  allowed_oauth_flows                  = ["code"]
+  allowed_oauth_flows_user_pool_client = true
+  allowed_oauth_scopes                 = ["openid", "email", "profile"]
+
+  supported_identity_providers = concat(
+    ["COGNITO"],
+    var.google_client_id != "" ? ["Google"] : [],
+    var.facebook_app_id != "" ? ["Facebook"] : [],
+  )
+
+  callback_urls = ["${var.ui_base_url}/app"]
+  logout_urls   = ["${var.ui_base_url}/"]
+
+  # Short-lived access, long-lived refresh: a stolen id token expires in an
+  # hour, and the user still stays signed in for a month.
+  access_token_validity  = 1
+  id_token_validity      = 1
+  refresh_token_validity = 30
+  token_validity_units {
+    access_token  = "hours"
+    id_token      = "hours"
+    refresh_token = "days"
+  }
+
+  depends_on = [
+    aws_cognito_identity_provider.google,
+    aws_cognito_identity_provider.facebook,
+  ]
+}
+
+# Social sign-in is optional: the pool works with email alone, and each provider
+# switches on when its credentials are supplied.
+resource "aws_cognito_identity_provider" "google" {
+  count         = var.google_client_id != "" ? 1 : 0
+  user_pool_id  = aws_cognito_user_pool.users.id
+  provider_name = "Google"
+  provider_type = "Google"
+
+  provider_details = {
+    client_id        = var.google_client_id
+    client_secret    = var.google_client_secret
+    authorize_scopes = "openid email profile"
+  }
+
+  attribute_mapping = {
+    email    = "email"
+    username = "sub"
+  }
+}
+
+resource "aws_cognito_identity_provider" "facebook" {
+  count         = var.facebook_app_id != "" ? 1 : 0
+  user_pool_id  = aws_cognito_user_pool.users.id
+  provider_name = "Facebook"
+  provider_type = "Facebook"
+
+  provider_details = {
+    client_id        = var.facebook_app_id
+    client_secret    = var.facebook_app_secret
+    authorize_scopes = "public_profile,email"
+  }
+
+  attribute_mapping = {
+    email    = "email"
+    username = "id"
   }
 }

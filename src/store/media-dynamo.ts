@@ -22,9 +22,16 @@ import type { MediaAsset } from "../media/types.js";
  * which is the property that was actually missing.
  */
 export class DynamoMediaStore extends MediaStore {
+  /**
+   * No userId here.
+   *
+   * It was a constructor argument, which bound one process-wide store to one
+   * person — fine when every visitor was the same user, wrong the moment they
+   * are not. The user now arrives with each refresh, like it does with every
+   * other method on this class.
+   */
   constructor(
     private client: DynamoDBDocumentClient,
-    private userId: string,
     private table = process.env.DDB_TABLE ?? TABLE_NAME,
   ) {
     super();
@@ -37,12 +44,12 @@ export class DynamoMediaStore extends MediaStore {
    * touches the library repeatedly, and re-querying for each would turn one
    * query into dozens for data that cannot change mid-turn.
    */
-  async refresh(): Promise<void> {
+  async refresh(userId: string): Promise<void> {
     const result = await this.client.send(
       new QueryCommand({
         TableName: this.table,
         KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
-        ExpressionAttributeValues: { ":pk": key.user(this.userId), ":sk": "ASSET#" },
+        ExpressionAttributeValues: { ":pk": key.user(userId), ":sk": "ASSET#" },
       }),
     );
 

@@ -24,13 +24,14 @@ import { seedAssets, seedChannels, seedConnections, seedContent, USER_ID } from 
  */
 export async function ensureSeeded(
   client: DynamoDBDocumentClient,
+  userId: string,
   table = process.env.DDB_TABLE ?? TABLE_NAME,
 ): Promise<boolean> {
   const existing = await client.send(
     new QueryCommand({
       TableName: table,
       KeyConditionExpression: "PK = :pk",
-      ExpressionAttributeValues: { ":pk": key.user(USER_ID) },
+      ExpressionAttributeValues: { ":pk": key.user(userId) },
       Limit: 1,
     }),
   );
@@ -42,7 +43,12 @@ export async function ensureSeeded(
   const put = (Item: Record<string, unknown>) =>
     client.send(new PutCommand({ TableName: table, Item }));
 
-  for (const connection of seedConnections) {
+  // Rewritten onto THIS user. The seed is authored against a demo id; writing
+  // it verbatim would file one person's starter content under another's
+  // partition, which is the whole bug this authentication work exists to fix.
+  const forUser = <T extends { userId: string }>(row: T): T => ({ ...row, userId });
+
+  for (const connection of seedConnections.map(forUser)) {
     await put({
       PK: key.user(connection.userId),
       SK: key.connection(connection.id),
@@ -52,17 +58,17 @@ export async function ensureSeeded(
     });
   }
 
-  for (const channel of seedChannels) {
+  for (const channel of seedChannels.map(forUser)) {
     await put({ PK: key.user(channel.userId), SK: key.channel(channel.id), ...channel });
   }
 
   // The demo library. Without this the calendar seeds but every post refers to
   // an asset that does not exist, and the media tab is empty.
-  for (const asset of seedAssets()) {
+  for (const asset of seedAssets().map(forUser)) {
     await put({ PK: key.user(asset.userId), SK: key.asset(asset.id), ...asset });
   }
 
-  for (const item of seedContent()) {
+  for (const item of seedContent().map(forUser)) {
     const { variants, ...rest } = item;
     await put({
       PK: key.user(rest.userId),
@@ -71,7 +77,7 @@ export async function ensureSeeded(
       ...rest,
     });
 
-    for (const variant of variants) {
+    for (const variant of variants.map(forUser)) {
       await put({
         PK: key.user(variant.userId),
         SK: key.variant(variant.id),

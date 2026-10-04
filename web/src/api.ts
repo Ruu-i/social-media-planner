@@ -147,6 +147,31 @@ const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
 
 export const apiUrl = (path: string) => `${API_BASE}${path}`;
 
+/**
+ * Every request carries the signed-in user's token.
+ *
+ * Centralised here rather than at each call site: there are twenty of them, and
+ * one that forgot would be a request the server answers as somebody else.
+ */
+function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  let token: string | null = null;
+  try {
+    token = sessionStorage.getItem("idToken");
+  } catch {
+    /* private browsing — the request simply goes out unauthenticated */
+  }
+  return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;
+}
+
+/** Public: it is what tells the browser whether a token is needed at all. */
+export const getConfig = () =>
+  fetch(apiUrl("/api/config"), { headers: authHeaders() }).then(
+    json<{
+      authEnabled: boolean;
+      cognito: { domain: string; clientId: string; providers?: string[] };
+    }>,
+  );
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { message?: string };
@@ -157,26 +182,26 @@ async function json<T>(res: Response): Promise<T> {
 
 export const api = {
   createSession: () =>
-    fetch(apiUrl("/api/sessions"), { method: "POST" }).then(json<{ sessionId: string }>),
+    fetch(apiUrl("/api/sessions"), { method: "POST", headers: authHeaders() }).then(json<{ sessionId: string }>),
 
   /** The conversation so far, so a browser reload does not lose it. */
   messages: (sessionId: string) =>
-    fetch(apiUrl(`/api/sessions/${sessionId}/messages`)).then(
+    fetch(apiUrl(`/api/sessions/${sessionId}/messages`), { headers: authHeaders() }).then(
       json<{ entries: { role: "user" | "assistant"; text: string }[] }>,
     ),
 
-  calendar: () => fetch(apiUrl("/api/calendar")).then(json<{ items: ContentItem[] }>),
+  calendar: () => fetch(apiUrl("/api/calendar"), { headers: authHeaders() }).then(json<{ items: ContentItem[] }>),
 
   accounts: () =>
-    fetch(apiUrl("/api/accounts")).then(
+    fetch(apiUrl("/api/accounts"), { headers: authHeaders() }).then(
       json<{ accounts: Account[]; livePublishing: boolean }>,
     ),
 
-  media: () => fetch(apiUrl("/api/media")).then(json<{ assets: MediaAsset[] }>),
+  media: () => fetch(apiUrl("/api/media"), { headers: authHeaders() }).then(json<{ assets: MediaAsset[] }>),
 
   /** The human gate. Goes straight to the backend — never through the agent. */
   approve: (variantId: string) =>
-    fetch(apiUrl(`/api/variants/${variantId}/approve`), { method: "POST" }).then(
+    fetch(apiUrl(`/api/variants/${variantId}/approve`), { method: "POST", headers: authHeaders() }).then(
       json<{ variant: Variant }>,
     ),
 
@@ -187,7 +212,7 @@ export const api = {
   ) =>
     fetch(apiUrl(`/api/variants/${variantId}`), {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(changes),
     }).then(json<{ variant: Variant }>),
 
@@ -195,35 +220,35 @@ export const api = {
   schedule: (variantId: string, scheduledFor: string) =>
     fetch(apiUrl(`/api/variants/${variantId}/schedule`), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ scheduledFor }),
     }).then(json<{ variant: Variant }>),
 
   cancel: (variantId: string) =>
-    fetch(apiUrl(`/api/variants/${variantId}/cancel`), { method: "POST" }).then(
+    fetch(apiUrl(`/api/variants/${variantId}/cancel`), { method: "POST", headers: authHeaders() }).then(
       json<{ variant: Variant }>,
     ),
 
   publishDue: () =>
-    fetch(apiUrl("/api/publish/run"), { method: "POST" }).then(json<{ outcomes: PublishOutcome[] }>),
+    fetch(apiUrl("/api/publish/run"), { method: "POST", headers: authHeaders() }).then(json<{ outcomes: PublishOutcome[] }>),
 
   /** Whether a turn is allowed right now — budget AND hourly rate limit. */
   turnAllowed: () =>
-    fetch(apiUrl("/api/turn-allowed")).then(
+    fetch(apiUrl("/api/turn-allowed"), { headers: authHeaders() }).then(
       json<{ allowed: boolean; reason?: string; spentUsd: number; budgetUsd: number }>,
     ),
 
-  profile: () => fetch(apiUrl("/api/profile")).then(json<{ profile: BusinessProfile }>),
+  profile: () => fetch(apiUrl("/api/profile"), { headers: authHeaders() }).then(json<{ profile: BusinessProfile }>),
 
   updateProfile: (changes: Partial<BusinessProfile>) =>
     fetch(apiUrl("/api/profile"), {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(changes),
     }).then(json<{ profile: BusinessProfile }>),
 
   connections: () =>
-    fetch(apiUrl("/api/connections")).then(
+    fetch(apiUrl("/api/connections"), { headers: authHeaders() }).then(
       json<{ connections: Connection[]; providers: ProviderStatus[] }>,
     ),
 
@@ -235,16 +260,16 @@ export const api = {
    * cannot be displayed and the user never gets to approve anything.
    */
   connectStart: (provider: string) =>
-    fetch(apiUrl(`/api/connect/${provider}/start`)).then(json<{ url: string }>),
+    fetch(apiUrl(`/api/connect/${provider}/start`), { headers: authHeaders() }).then(json<{ url: string }>),
 
   /** Ask the provider whether a stored grant still works. Persists the answer. */
   verifyConnection: (connectionId: string) =>
-    fetch(apiUrl(`/api/connections/${connectionId}/verify`), { method: "POST" }).then(
+    fetch(apiUrl(`/api/connections/${connectionId}/verify`), { method: "POST", headers: authHeaders() }).then(
       json<{ ok: boolean; reason?: string }>,
     ),
 
   disconnect: (connectionId: string) =>
-    fetch(apiUrl(`/api/connections/${connectionId}/disconnect`), { method: "POST" }).then(
+    fetch(apiUrl(`/api/connections/${connectionId}/disconnect`), { method: "POST", headers: authHeaders() }).then(
       json<{ disconnected: boolean }>,
     ),
 
@@ -252,7 +277,7 @@ export const api = {
   uploadUrl: (filename: string) =>
     fetch(apiUrl("/api/media/upload-url"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ filename }),
     }).then(json<{ uploadUrl: string; storageRef: string; publicUrl: string; contentType: string }>),
 
@@ -269,14 +294,14 @@ export const api = {
   }) =>
     fetch(apiUrl("/api/media/register"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(input),
     }).then(json<{ asset: MediaAsset; suitableFormats: string[] }>),
 
   upload: (filename: string, dataBase64: string) =>
     fetch(apiUrl("/api/media"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ filename, dataBase64 }),
     }).then(json<{ asset: MediaAsset; quality: string; suitableFormats: string[] }>),
 };
@@ -309,41 +334,79 @@ export function streamTurn(
     ? `&assets=${encodeURIComponent(attachedAssetIds.join(","))}`
     : "";
   const path = `/api/sessions/${sessionId}/stream?q=${encodeURIComponent(message)}${assets}`;
-  // apiUrl, NOT a bare relative path. Every other call goes through it; this one
-  // did not, so in production the stream was opened against CloudFront — which
-  // answers unknown paths with index.html, so EventSource would fail on HTML
-  // where every other request succeeded. Locally it worked, because Vite's proxy
-  // makes relative and absolute the same thing.
-  // Preflight the guard before opening the stream, so a refusal arrives as a
-  // readable reason instead of an opaque EventSource error.
-  const source = new EventSource(apiUrl(path));
 
-  source.addEventListener("tool", (e) =>
-    handlers.onTool?.(JSON.parse((e as MessageEvent).data).name),
-  );
-  source.addEventListener("thinking", (e) =>
-    handlers.onThinking?.(JSON.parse((e as MessageEvent).data).delta),
-  );
-  source.addEventListener("writing", () => handlers.onWriting?.());
-  source.addEventListener("text", (e) =>
-    handlers.onText?.(JSON.parse((e as MessageEvent).data).delta),
-  );
-  source.addEventListener("done", (e) => {
-    handlers.onDone?.(JSON.parse((e as MessageEvent).data));
-    source.close();
-  });
-  source.addEventListener("error", (e) => {
-    // Two different failures arrive on this listener: an "error" event the
-    // server sent deliberately, and the browser's own connection error, which
-    // carries no data. Only the first has something worth showing.
-    const data = (e as MessageEvent).data;
-    if (data) {
-      handlers.onError?.(JSON.parse(data).message);
-    } else if (source.readyState === EventSource.CLOSED) {
-      handlers.onError?.("Connection to the server was lost.");
+  /**
+   * fetch, not EventSource.
+   *
+   * EventSource cannot send headers, so the one route that costs money and
+   * touches a user's account would have been the only one unable to carry a
+   * token. The alternative — putting the token in the query string — writes a
+   * live credential into browser history, CloudWatch logs and any proxy in
+   * between, which is exactly the kind of leak this work exists to close.
+   *
+   * fetch streams the same bytes and takes an Authorization header. The cost is
+   * parsing the SSE wire format by hand, which is twenty lines: frames are
+   * separated by a blank line, and each carries "event:" and "data:".
+   */
+  const abort = new AbortController();
+
+  void (async () => {
+    try {
+      const res = await fetch(apiUrl(path), {
+        headers: authHeaders({ Accept: "text/event-stream" }),
+        signal: abort.signal,
+      });
+
+      if (!res.ok || !res.body) {
+        // A refusal arrives as JSON with a real status, not as a stream — which
+        // is why the server checks the budget and the token BEFORE writing any
+        // SSE headers.
+        const body = (await res.json().catch(() => ({}))) as { message?: string };
+        handlers.onError?.(body.message ?? `The server refused the request (${res.status}).`);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Frames end with a blank line. Anything after the last one is a
+        // partial frame and has to wait for more bytes.
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+
+        for (const frame of frames) {
+          let event = "message";
+          let data = "";
+          for (const line of frame.split("\n")) {
+            // Comment lines (": keepalive", and the padding that defeats
+            // Lambda's buffering) are ignored, exactly as EventSource did.
+            if (line.startsWith(":")) continue;
+            if (line.startsWith("event:")) event = line.slice(6).trim();
+            else if (line.startsWith("data:")) data += line.slice(5).trim();
+          }
+          if (!data) continue;
+
+          const payload = JSON.parse(data);
+          if (event === "tool") handlers.onTool?.(payload.name);
+          else if (event === "thinking") handlers.onThinking?.(payload.delta);
+          else if (event === "writing") handlers.onWriting?.();
+          else if (event === "text") handlers.onText?.(payload.delta);
+          else if (event === "done") handlers.onDone?.(payload);
+          else if (event === "error") handlers.onError?.(payload.message);
+        }
+      }
+    } catch (e) {
+      // An abort is the caller changing their mind, not a failure.
+      if ((e as Error).name === "AbortError") return;
+      handlers.onError?.(e instanceof Error ? e.message : String(e));
     }
-    source.close();
-  });
+  })();
 
-  return () => source.close();
+  return () => abort.abort();
 }

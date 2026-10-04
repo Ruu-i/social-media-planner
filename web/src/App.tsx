@@ -7,6 +7,16 @@ import { Accounts } from "./components/Accounts";
 import { Tooltip } from "./components/Tooltip";
 import { Notifications } from "./components/Notifications";
 import { Profile } from "./components/Profile";
+import { SignIn } from "./components/SignIn";
+import {
+  completeSignIn,
+  getConfigOnce,
+  signOut,
+  tokenEmail,
+  tokenExpired,
+  tokenSubject,
+} from "./authGate";
+import type { AuthConfig as AuthConfigT } from "./authGate";
 import { AnimatedBackdrop } from "./ui";
 
 export default function App() {
@@ -17,6 +27,21 @@ export default function App() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [showAccounts, setShowAccounts] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  // Whether the user has actually written their own profile, so the onboarding
+  // checklist can tick the step off rather than nagging about something done.
+  const [profileSet, setProfileSet] = useState(false);
+  /**
+   * Authentication state, resolved before anything is fetched.
+   *
+   * "checking" matters: rendering the planner while this is unknown would show
+   * an empty calendar for a split second to someone who is signed in, and the
+   * sign-in page to someone who is not — both wrong, briefly, on every load.
+   */
+  const [auth, setAuth] = useState<
+    | { phase: "checking" }
+    | { phase: "anonymous"; config: AuthConfigT }
+    | { phase: "signedIn"; config: AuthConfigT | null }
+  >({ phase: "checking" });
   const [livePublishing, setLivePublishing] = useState(false);
   const [confirmPublish, setConfirmPublish] = useState(false);
   const [connectNotice, setConnectNotice] = useState<string | null>(null);
@@ -62,6 +87,12 @@ export default function App() {
       setAssets(m.assets);
       setAccounts(a.accounts);
       setLivePublishing(a.livePublishing);
+      // A profile counts as "set" once it names a business. A brand new account
+      // has the empty default, which is not something the user chose.
+      void api
+        .profile()
+        .then((pr) => setProfileSet(Boolean(pr.profile.businessName?.trim())))
+        .catch(() => undefined);
     } catch (e) {
       setBootError(e instanceof Error ? e.message : String(e));
     }
@@ -94,9 +125,25 @@ export default function App() {
   }, [refresh]);
 
   useEffect(() => {
+    void (async () => {
+      const config = await getConfigOnce();
+      if (!config?.authEnabled) {
+        // No user pool configured — local development and the demo deployment
+        // before Cognito exists. The API answers as a single demo user, which
+        // is the behaviour this replaces, not a bypass of it.
+        setAuth({ phase: "signedIn", config: null });
+        return;
+      }
+      await completeSignIn(config);
+      setAuth(tokenExpired() ? { phase: "anonymous", config } : { phase: "signedIn", config });
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (auth.phase !== "signedIn") return;
     const existing = (() => {
       try {
-        return localStorage.getItem("sessionId");
+        return localStorage.getItem(`sessionId:${tokenSubject()}`);
       } catch {
         // Private browsing and blocked site data both throw here. Losing the
         // conversation is the old behaviour, not a crash.
@@ -112,7 +159,7 @@ export default function App() {
         .then((s) => {
           setSessionId(s.sessionId);
           try {
-            localStorage.setItem("sessionId", s.sessionId);
+            localStorage.setItem(`sessionId:${tokenSubject()}`, s.sessionId);
           } catch {
             /* ignore — the session still works for this page view */
           }
@@ -120,7 +167,14 @@ export default function App() {
         .catch((e) => setBootError(e instanceof Error ? e.message : String(e)));
     }
     void refresh();
-  }, [refresh]);
+  }, [refresh, auth.phase]);
+
+  if (auth.phase === "checking") {
+    return <div className="min-h-screen bg-[#faf9f7]" />;
+  }
+  if (auth.phase === "anonymous") {
+    return <SignIn config={auth.config} />;
+  }
 
   const variants = items.flatMap((i) => i.variants);
   const counts = {
@@ -140,9 +194,12 @@ export default function App() {
         <div className="card max-w-md rounded-2xl border border-rose-200 bg-white p-6">
           <h1 className="text-sm font-semibold text-rose-700">Cannot reach the API</h1>
           <p className="mt-2 text-sm text-stone-600">{bootError}</p>
+          {/* Advice a deployed user can act on. This used to say "start it
+              with npm run api", which is true locally and sends everyone else
+              looking for a server they do not run. */}
           <p className="mt-3 text-xs text-stone-500">
-            Start it with <code className="rounded bg-stone-100 px-1 py-0.5">npm run api</code> in
-            the project root, then reload.
+            Reload the page. If it keeps happening, sign out and sign in again -
+            your session may have expired.
           </p>
         </div>
       </div>
@@ -164,8 +221,12 @@ export default function App() {
             ☕
           </div>
           <div className="leading-tight">
-            <h1 className="text-[13px] font-semibold">Social Media Planner</h1>
-            <p className="text-[11px] text-stone-500">Brew &amp; Bean · Colombo</p>
+            {/* The APP's identity, not the user's business.
+                This read "Brew & Bean · Colombo" — one particular demo
+                business, shown to everyone who opened the app. Whose business
+                it is belongs in the Business panel, where it can be changed. */}
+            <h1 className="text-[13px] font-semibold">FollowFav</h1>
+            <p className="text-[11px] text-stone-500">Social media planner</p>
           </div>
         </div>
 
@@ -201,7 +262,7 @@ export default function App() {
               account already present it rendered as plain text with no
               affordance, so there was no visible way to connect anything. A
               named button is findable whether or not something is connected. */}
-          <Tooltip text="Who the agent writes for — name, tone, audience, the themes it plans around.">
+          <Tooltip text="Who the agent writes for - name, tone, audience, the themes it plans around.">
             <button
               onClick={() => setShowProfile(true)}
               className="rounded-lg px-3 py-1.5 text-[11px] font-medium text-stone-600 transition hover:bg-stone-100 hover:text-stone-900"
@@ -209,6 +270,17 @@ export default function App() {
               Business
             </button>
           </Tooltip>
+
+          {auth.config && (
+            <Tooltip text={`Signed in as ${tokenEmail() ?? "you"}. Sign out on a shared machine.`}>
+              <button
+                onClick={() => signOut(auth.config!)}
+                className="rounded-lg px-3 py-1.5 text-[11px] font-medium text-stone-600 transition hover:bg-stone-100 hover:text-stone-900"
+              >
+                Sign out
+              </button>
+            </Tooltip>
+          )}
 
           <Notifications items={items} />
 
@@ -247,7 +319,7 @@ export default function App() {
           <Tooltip
             text={
               livePublishing
-                ? "Posts anything whose scheduled time has passed — to your real accounts, immediately."
+                ? "Posts anything whose scheduled time has passed - to your real accounts, immediately."
                 : "Simulates publishing. Nothing is sent to any real account while live publishing is off."
             }
           >
@@ -378,7 +450,7 @@ export default function App() {
 
             {counts.pending > 0 && (
               <span className="ml-auto text-[11px] text-amber-700">
-                {counts.pending} waiting for your approval — the agent cannot approve its own work
+                {counts.pending} waiting for your approval - the agent cannot approve its own work
               </span>
             )}
           </div>
@@ -392,6 +464,8 @@ export default function App() {
                   assets={assets}
                   onChanged={refresh}
                   onAskAgent={setAgentPrompt}
+                  hasAccounts={accounts.length > 0}
+                  profileSet={profileSet}
                 />
               ) : (
                 <MediaLibrary assets={assets} onChanged={refresh} />
@@ -414,7 +488,7 @@ export default function App() {
                   .createSession()
                   .then((s) => {
                     try {
-                      localStorage.setItem("sessionId", s.sessionId);
+                      localStorage.setItem(`sessionId:${tokenSubject()}`, s.sessionId);
                     } catch {
                       /* ignore */
                     }
@@ -441,7 +515,7 @@ export default function App() {
             <h2 className="text-sm font-semibold text-stone-900">Publish to your real accounts?</h2>
             <p className="mt-1.5 text-[12px] leading-relaxed text-stone-600">
               Every approved post whose scheduled time has already passed will be posted now, to
-              the accounts shown in the header. This cannot be undone from here — you would have to
+              the accounts shown in the header. This cannot be undone from here - you would have to
               delete the posts in Instagram.
             </p>
             <div className="mt-4 flex items-center justify-end gap-2">

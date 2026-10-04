@@ -169,7 +169,7 @@ export function Accounts({
                     {connection
                       ? connection.status === "ACTIVE"
                         ? channels.map((c) => c.handle).join(", ") || "Connected"
-                        : "Session expired — reconnect to keep publishing"
+                        : "Session expired - reconnect to keep publishing"
                       : p.configured
                         ? "Not connected"
                         : (p.reason ?? "Not available yet")}
@@ -220,7 +220,7 @@ export function Accounts({
           {/* Stated rather than hidden: a Facebook button that cannot work is
               worse than an honest explanation of why it is not there. */}
           <p className="pt-2 text-[11px] leading-relaxed text-stone-600">
-            Instagram needs a Business or Creator account — personal accounts cannot be published
+            Instagram needs a Business or Creator account - personal accounts cannot be published
             to through any API. Facebook posting needs a Page you administer, and is coming next.
           </p>
         </div>

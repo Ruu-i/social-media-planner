@@ -5,6 +5,7 @@ import { createConnectionStore, createMediaStore, createSeededStore, profile, US
 import { DynamoStore } from "../store/dynamo.js";
 import { DynamoConnectionStore } from "../store/connections-dynamo.js";
 import { ensureSeeded } from "../store/bootstrap.js";
+import { authEnabled } from "../auth/user.js";
 import { DynamoMediaStore } from "../store/media-dynamo.js";
 import { MockScheduler } from "../scheduler/mock.js";
 import type { ConnectionStore } from "../store/connections.js";
@@ -56,7 +57,7 @@ import {
  */
 const media: MediaStore =
   process.env.STORE === "dynamo"
-    ? new DynamoMediaStore(createDynamoClient(), USER_ID)
+    ? new DynamoMediaStore(createDynamoClient())
     : createMediaStore();
 
 /**
@@ -109,26 +110,51 @@ const store: ContentStore =
  * module load, because a cold start must not block on DynamoDB before it knows
  * whether the request even needs it.
  */
-let seeding: Promise<boolean> | null = null;
+// Per user, not one global promise. A single memo would seed the first user to
+// arrive and then report "already done" for everyone after them, leaving every
+// subsequent account completely empty.
+const seeding = new Map<string, Promise<boolean>>();
 
-export async function ensureStoreReady(): Promise<boolean> {
+export async function ensureStoreReady(userId: string): Promise<boolean> {
   if (process.env.STORE !== "dynamo") return false;
-  const seeded = await seedOnce();
+
+  // A NEW ACCOUNT STARTS EMPTY.
+  //
+  // Seeding every user with the demo coffee shop was right when there was one
+  // user and the content was the demo. With real accounts it is actively wrong:
+  // someone signing up would find a stranger's calendar, a business profile
+  // describing a cafe in Colombo they have never heard of, and posts scheduled
+  // by somebody else. Their first impression of the product would be that it
+  // had confused them with another person.
+  //
+  // The demo data remains for local development, where there is no sign-in and
+  // an empty app is just an obstacle.
+  if (authEnabled()) {
+    await media.refresh(userId);
+    return false;
+  }
+
+  const seeded = await seedOnce(userId);
   // AFTER seeding, so the first request sees the demo library rather than an
   // empty one.
-  await media.refresh();
+  await media.refresh(userId);
   return seeded;
 }
 
-function seedOnce(): Promise<boolean> {
-  seeding ??= ensureSeeded(createDynamoClient()).catch((error) => {
-    // Never fatal. A failed seed leaves an empty calendar, which is survivable;
-    // taking every route down because the demo content could not be written is
-    // not.
-    console.error(JSON.stringify({ msg: "seed failed", error: String(error) }));
-    return false;
-  });
-  return seeding;
+function seedOnce(userId: string): Promise<boolean> {
+  if (!seeding.has(userId)) {
+    seeding.set(
+      userId,
+      ensureSeeded(createDynamoClient(), userId).catch((error) => {
+        // Never fatal. A failed seed leaves an empty calendar, which is
+        // survivable; taking every route down because the demo content could
+        // not be written is not.
+        console.error(JSON.stringify({ msg: "seed failed", userId, error: String(error) }));
+        return false;
+      }),
+    );
+  }
+  return seeding.get(userId)!;
 }
 
 /**
@@ -146,7 +172,7 @@ function seedOnce(): Promise<boolean> {
 const livePublishing = process.env.LIVE_PUBLISHING === "true";
 
 const tokenProvider = livePublishing
-  ? new StoredTokenProvider(connectionStore, createTokenStore(), USER_ID)
+  ? new StoredTokenProvider(connectionStore, createTokenStore())
   : new MockTokenProvider();
 
 const publisher = new Publisher(
@@ -176,13 +202,16 @@ export function createSession(): string {
   return randomUUID();
 }
 
-export function agentFor(sessionId: string): ContentAgent {
-  return new ContentAgent(
-    store,
-    { userId: USER_ID, sessionId },
-    { storage },
-    conversations,
-  );
+/**
+ * An agent bound to ONE user's data.
+ *
+ * The userId used to come from a module constant, so every agent everywhere
+ * planned against the same calendar and the same connected account regardless
+ * of who was asking. It is now whoever the request authenticated as, and every
+ * tool the agent calls is scoped by it.
+ */
+export function agentFor(userId: string, sessionId: string): ContentAgent {
+  return new ContentAgent(store, { userId, sessionId }, { storage }, conversations);
 }
 
 /**

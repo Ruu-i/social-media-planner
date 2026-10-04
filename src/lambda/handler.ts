@@ -1,7 +1,8 @@
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-import { agentFor, media, spendGuard, USER_ID } from "../server/sessions.js";
+import { agentFor, ensureStoreReady, media, spendGuard } from "../server/sessions.js";
+import { authenticate } from "../auth/user.js";
 import { buildAttachedPrompt, parseAssetIds } from "../agent/attachments.js";
 import { ensureApiKey } from "../agent/provider.js";
 import { clientIdOf, isStreamRoute, route, type RouteResult } from "./router.js";
@@ -50,6 +51,24 @@ async function streamTurn(
   raw: ResponseStream,
   sessionId: string,
 ): Promise<void> {
+  // Identify the caller before spending anything on their behalf. An
+  // unauthenticated turn would plan against whoever's data the constant
+  // happened to name.
+  let userId: string;
+  try {
+    userId = (await authenticate(event)).userId;
+    await ensureStoreReady(userId);
+  } catch (error) {
+    return await writeJson(raw, {
+      kind: "json",
+      statusCode: 401,
+      body: {
+        error: "UNAUTHENTICATED",
+        message: error instanceof Error ? error.message : "Sign in to continue",
+      },
+    });
+  }
+
   const params = new URLSearchParams(event.rawQueryString ?? "");
   const message = (params.get("q") ?? "").trim();
 
@@ -133,9 +152,9 @@ async function streamTurn(
   try {
     // An agent is cheap to build and holds no state — history comes from the
     // conversation store, which is what makes this work across cold starts.
-    const agent = agentFor(sessionId);
+    const agent = agentFor(userId, sessionId);
 
-    const result = await agent.send(buildAttachedPrompt(media, USER_ID, message, assetIds), {
+    const result = await agent.send(buildAttachedPrompt(media, userId, message, assetIds), {
       onToolCall: (name) => send("tool", { name }),
       onThinking: (delta) => send("thinking", { delta }),
       onWriting: () => send("writing", {}),

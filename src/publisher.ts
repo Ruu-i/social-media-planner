@@ -94,7 +94,7 @@ export class Publisher {
     try {
       // The token is resolved here, at the moment of use, and never stored,
       // logged, or returned. Nothing upstream of this line has seen it.
-      const accessToken = await this.tokens.getAccessToken(connection.id);
+      const accessToken = await this.tokens.getAccessToken(userId, connection.id);
 
       const result = await connector.publish(
         {

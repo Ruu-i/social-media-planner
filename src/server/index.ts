@@ -79,7 +79,7 @@ app.post("/api/sessions", async (_req, res) => {
 app.get("/api/sessions/:id/stream", async (req, res) => {
   // An agent is cheap to build and holds no state — history comes from the
   // conversation store. So there is nothing to look up and nothing to expire.
-  const agent = agentFor(req.params.id);
+  const agent = agentFor(USER_ID, req.params.id);
 
   const message = String(req.query.q ?? "").trim();
   if (!message) return res.status(400).json({ error: "INVALID_INPUT", message: "q is required" });

@@ -89,7 +89,7 @@ export class MockMetaConnector implements SocialConnector {
 
 /** Stands in for Secrets Manager. Returns a placeholder, never a real token. */
 export class MockTokenProvider implements TokenProvider {
-  async getAccessToken(connectionId: string): Promise<string> {
+  async getAccessToken(_userId: string, connectionId: string): Promise<string> {
     return `mock-token-for-${connectionId}`;
   }
 }

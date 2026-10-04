@@ -1,4 +1,4 @@
-import { ensureStoreReady, publisher, store } from "../server/sessions.js";
+import { media, publisher, store } from "../server/sessions.js";
 
 /**
  * The publisher worker.
@@ -38,8 +38,6 @@ interface SweepResult {
 }
 
 export const handler = async (): Promise<SweepResult> => {
-  await ensureStoreReady();
-
   const now = new Date();
   const due = await store.getDueVariants(now);
 
@@ -55,6 +53,10 @@ export const handler = async (): Promise<SweepResult> => {
     // already succeeded. publishOne is idempotent, but re-running it is still
     // wasted work and noisier logs than necessary.
     try {
+      // The library is loaded per OWNER, not once for the sweep: due variants
+      // can belong to different people, and publishing reads each one's media
+      // to resolve the URLs Meta will fetch.
+      await media.refresh(variant.userId);
       const outcome = await publisher.publishOne(variant.userId, variant.id);
       if (outcome.status === "PUBLISHED") result.published++;
       else result.failed++;

@@ -140,7 +140,7 @@ export function Profile({ onClose, onSaved }: { onClose: () => void; onSaved: ()
               <label className="block">
                 <span className="text-[11px] font-medium text-stone-700">Content pillars</span>
                 <span className="ml-1.5 text-[10px] text-stone-400">
-                  one per line — the themes it plans around
+                  one per line - the themes it plans around
                 </span>
                 <textarea
                   value={pillars}
@@ -153,7 +153,7 @@ export function Profile({ onClose, onSaved }: { onClose: () => void; onSaved: ()
               <label className="block">
                 <span className="text-[11px] font-medium text-stone-700">Words to avoid</span>
                 <span className="ml-1.5 text-[10px] text-stone-400">
-                  comma separated — it will not use these
+                  comma separated - it will not use these
                 </span>
                 <input
                   value={banned}
@@ -165,7 +165,7 @@ export function Profile({ onClose, onSaved }: { onClose: () => void; onSaved: ()
 
             <div className="flex shrink-0 items-center justify-end gap-2 border-t border-stone-100 px-5 py-3">
               <span className="mr-auto text-[11px] text-stone-500">
-                Existing posts are not rewritten — this changes what comes next.
+                Existing posts are not rewritten - this changes what comes next.
               </span>
               <button
                 onClick={onClose}

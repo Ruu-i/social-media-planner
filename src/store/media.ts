@@ -58,7 +58,7 @@ export class MediaStore {
   }
 
   /** Overridden by persisted stores; a no-op in memory. */
-  async refresh(): Promise<void> {}
+  async refresh(_userId: string): Promise<void> {}
 
   /** Overridden by persisted stores; a no-op in memory. */
   async flush(): Promise<void> {}

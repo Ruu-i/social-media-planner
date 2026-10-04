@@ -392,7 +392,7 @@ export function Chat({
               {pendingVideo.width > 0
                 ? `${pendingVideo.width}×${pendingVideo.height}`
                 : "shape unknown"}
-              {pendingVideo.duration > 0 ? ` · ${pendingVideo.duration}s` : ""} — the agent cannot
+              {pendingVideo.duration > 0 ? ` · ${pendingVideo.duration}s` : ""} - the agent cannot
               watch it, so it only knows what you write here.
             </p>
             <textarea
