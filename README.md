@@ -1,12 +1,16 @@
-# Social Media Content Planner
+# FollowFav — AI Agent for Social Media Planning
+
+### ▶ [Try the live demo](https://d252um6eslhku1.cloudfront.net)
 
 A tool-using AI agent that plans, drafts, revises and schedules social media
 content — keeping a human in the loop before anything irreversible happens.
 
+The agent has **no tool that can approve or publish**. Those endpoints live
+outside everything it can reach, so "it cannot post without you" is a missing
+capability rather than a promise in a prompt.
+
 Built on the Claude API (`claude-opus-5`) in TypeScript, so the same agent module
 runs unchanged behind a CLI, a local Express server, and a Lambda.
-
-**Live: https://d252um6eslhku1.cloudfront.net**
 
 - [Agent design](docs/AGENT-DESIGN.md) — tool surface, approval state machine, validation layer
 - [Content model](docs/CONTENT-MODEL.md) — ideas vs platform versions, formats, time, campaigns
@@ -18,18 +22,19 @@ runs unchanged behind a CLI, a local Express server, and a Lambda.
 - [Deploy](docs/DEPLOY.md) — the Terraform stack, start to finish
 - [Roadmap](docs/ROADMAP.md) — the phases and what each one teaches
 
-**Current status: the full loop works end to end, deployed on AWS.** Draft →
-approve → schedule → publish, Meta only (Instagram + Facebook), planning around
-a real media library the agent can see.
+**Current status: live, and it has published to a real Instagram account.**
+Sign in → connect Instagram → plan → approve → schedule → published, with the
+scheduler firing unattended and the permalink written back.
 
-Real: DynamoDB, S3, Lambda, CloudFront, and the agent itself. Still mocked:
-the scheduler (in-memory timers) and the publish connector, which fails in all
-four realistic ways but posts nothing. No real OAuth yet — see
-[docs/OAUTH.md](docs/OAUTH.md).
+Real: Instagram OAuth and the Graph publishing API, DynamoDB, S3, Cognito
+authentication, an EventBridge sweep that publishes on time, and the agent
+itself. Not yet built: the Facebook Pages grant — declared in the model and the
+UI, but its OAuth path is a separate one and is not written. See
+[docs/OAUTH.md](docs/OAUTH.md) for why the two platforms need two grants.
 
-The store is an interface with two implementations, and the same 115 assertions
+The store is an interface with two implementations, and the same 146 assertions
 run against both — which is the only reason swapping in DynamoDB was not a
-rewrite. It also caught two real bugs the memory store alone never would have:
+rewrite. It also caught four real bugs the memory store alone never would have:
 see [Parity testing](#parity-testing-found-bugs-a-single-store-would-not-have).
 
 ## Setup
@@ -43,7 +48,7 @@ cp .env.example .env          # add your key from console.anthropic.com
 
 ```bash
 npm run agent        # interactive REPL
-npm run verify       # 115 safety assertions against the in-memory store
+npm run verify       # 146 safety assertions against the in-memory store
 npm run verify:both  # the same assertions against DynamoDB Local too
 npm run typecheck
 ```
@@ -94,7 +99,7 @@ src/
   cli.ts            REPL standing in for the React UI
   schemas.ts        domain model + the variant state machine
   seed.ts           demo business profile and capability matrix
-  verify.ts         83 safety assertions
+  verify.ts         the safety assertions, run against both stores
   agent/
     agent.ts        the loop (SDK Tool Runner)
     tools.ts        the 19 tools
@@ -115,11 +120,18 @@ src/
     conversations.ts one row per message, so a turn cannot blow the item limit
     connections.ts  OAuth connections and their channels — tokens never leave
   publisher.ts      the worker: drains due variants, applies failure policy
+  auth/
+    user.ts         verifies the Cognito token; every row is keyed by its sub
+  oauth/
+    instagram.ts    the real grant — short-lived token traded for 60 days
+    connect.ts      the flow; state is SIGNED, not stored
+    tokens.ts       tokens live in SSM, never in the content store
   scheduler/
-    types.ts        the Scheduler seam — EventBridge drops in here
-    mock.ts         in-memory timers, so reschedule/cancel are honest
+    types.ts        the Scheduler seam
+    mock.ts         in-memory timers for local development
   connectors/
-    types.ts        the SocialConnector seam — MetaConnector drops in here
+    types.ts        the SocialConnector seam
+    instagram.ts    the real one — container, poll, publish, permalink
     mock.ts         publishes nothing, fails in all four real ways
   media/
     types.ts        assets, aspect ratios, which formats a shape allows
